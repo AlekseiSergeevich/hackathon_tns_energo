@@ -1,0 +1,6 @@
+# Сегментация K-Prototypes (scripts/run_kprototypes_segmentation.py) + сбор признаков
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+kmodes>=0.12.2
+openpyxl>=3.1

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -533,6 +534,25 @@ def build_context(data_dir: Path, snapshot_month: str | None) -> BuildContext:
     )
 
 
+def osv_inactive_ls_ids(osv_long: pd.DataFrame) -> set[int]:
+    """ЛС без движения по ОСВ во всей выгрузке: сумма начислений, оплат и max СЗ — все нули."""
+
+    def nz(series: pd.Series) -> pd.Series:
+        return pd.to_numeric(series, errors="coerce").fillna(0)
+
+    grouped = (
+        osv_long.dropna(subset=["ls"])
+        .groupby("ls", dropna=False)
+        .agg(
+            accrual_sum=("accrual", lambda s: float(nz(s).sum())),
+            paid_sum=("paid", lambda s: float(nz(s).sum())),
+            sz_max=("sz_start", lambda s: float(nz(s).max())),
+        )
+    )
+    mask = (grouped["accrual_sum"] == 0) & (grouped["paid_sum"] == 0) & (grouped["sz_max"] == 0)
+    return {int(ls) for ls in grouped.loc[mask].index}
+
+
 def fill_missing_for_kprototypes(df: pd.DataFrame) -> pd.DataFrame:
     categorical_cols = [
         "has_phone",
@@ -562,11 +582,25 @@ def fill_missing_for_kprototypes(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_features(data_dir: Path, snapshot_month: str | None) -> pd.DataFrame:
+def build_features(
+    data_dir: Path,
+    snapshot_month: str | None,
+    *,
+    exclude_osv_inactive: bool = False,
+    only_delinquent_snapshot: bool = False,
+    warn_osv_inactive: bool = True,
+) -> pd.DataFrame:
     ctx = build_context(data_dir, snapshot_month)
 
     general = load_general_info(data_dir)
     osv_long = load_osv_long(data_dir)
+    inactive_ids = osv_inactive_ls_ids(osv_long)
+    if warn_osv_inactive and inactive_ids:
+        print(
+            f"OSV: ЛС без начислений/оплат/сальдо во всей выгрузке (нулевая история): {len(inactive_ids)}",
+            file=sys.stderr,
+        )
+
     osv_features = compute_osv_features(osv_long, ctx)
 
     payments = load_payments(data_dir)
@@ -601,6 +635,22 @@ def build_features(data_dir: Path, snapshot_month: str | None) -> pd.DataFrame:
     features["snapshot_month"] = ctx.snapshot_month
     features["asof_date"] = ctx.asof_date
 
+    before = len(features)
+    if exclude_osv_inactive and inactive_ids:
+        features = features[~features["ls"].isin(inactive_ids)]
+        print(
+            f"Исключено ЛС с нулевой ОСВ: {before - len(features)} (осталось {len(features)})",
+            file=sys.stderr,
+        )
+
+    if only_delinquent_snapshot:
+        dz = pd.to_numeric(features["DZ_current"], errors="coerce")
+        features = features[dz.fillna(0) > 0]
+        print(
+            f"Оставлены только ЛС с DZ_current > 0 на {ctx.snapshot_month.date()}: {len(features)} строк",
+            file=sys.stderr,
+        )
+
     features = fill_missing_for_kprototypes(features)
     return features.sort_values("ls").reset_index(drop=True)
 
@@ -633,6 +683,21 @@ def parse_args() -> argparse.Namespace:
         default=Path("output/kprototypes_features.parquet"),
         help="Output Parquet path.",
     )
+    parser.add_argument(
+        "--exclude-osv-inactive",
+        action="store_true",
+        help="Исключить ЛС, у которых по всей ОСВ суммарно 0 начислений, 0 оплат и max(СЗ на начало)=0.",
+    )
+    parser.add_argument(
+        "--only-delinquent",
+        action="store_true",
+        help="Оставить только ЛС с DZ_current > 0 на snapshot_month (до импутации пропусков).",
+    )
+    parser.add_argument(
+        "--no-osv-inactive-warn",
+        action="store_true",
+        help="Не печатать предупреждение о числе ЛС с нулевой ОСВ.",
+    )
     return parser.parse_args()
 
 
@@ -641,7 +706,13 @@ def main() -> None:
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     args.output_parquet.parent.mkdir(parents=True, exist_ok=True)
 
-    features = build_features(args.data_dir, args.snapshot_month)
+    features = build_features(
+        args.data_dir,
+        args.snapshot_month,
+        exclude_osv_inactive=args.exclude_osv_inactive,
+        only_delinquent_snapshot=args.only_delinquent,
+        warn_osv_inactive=not args.no_osv_inactive_warn,
+    )
     features.to_csv(args.output_csv, index=False)
 
     print(f"Built features: {features.shape[0]} rows, {features.shape[1]} cols")
