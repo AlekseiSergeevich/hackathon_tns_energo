@@ -55,50 +55,44 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 MEASURE_META: Dict[str, dict] = {
+    # cost_tier — порядковая шкала 1..5 по убыванию дешевизны (из Readme: Информирование ≪ Выезд ≪ Принудительные ≪ Суд).
+    # Рублёвые cost намеренно не указаны: реальная себестоимость не предоставлена бизнесом.
+    # Для оверрайда — см. configs/costs.yaml (опционально).
     "autodial": {
         "file": "04 Автодозвон ХК.xlsx",
-        "cost": 2.0,           # руб. на 1 воздействие
-        "risk_base": 0.0,
+        "cost_tier": 1,   # автоматизированное информирование, минимальные затраты
     },
     "sms": {
         "file": "06 СМС ХК.xlsx",
-        "cost": 1.5,
-        "risk_base": 0.0,
+        "cost_tier": 1,
     },
     "email": {
         "file": "05 E-mail ХК.xlsx",
-        "cost": 0.5,
-        "risk_base": 0.0,
+        "cost_tier": 1,
     },
     "operator_call": {
         "file": "07 Обзвон оператором ХК.xlsx",
-        "cost": 60.0,
-        "risk_base": 0.0,
+        "cost_tier": 3,   # ручной труд оператора
     },
     "claim": {
         "file": "08 Претензия ХК.xlsx",
-        "cost": 120.0,
-        "risk_base": 0.02,
+        "cost_tier": 3,   # бумажный документ + отправка
     },
     "visit": {
         "file": "09 Выезд к абоненту ХК.xlsx",
-        "cost": 600.0,
-        "risk_base": 0.05,
+        "cost_tier": 4,   # выезд — высокие ресурсы
     },
     "restriction_notice": {
         "file": "10 Уведомление о введении ограничения ХК.xlsx",
-        "cost": 50.0,
-        "risk_base": 0.03,
+        "cost_tier": 2,
     },
     "restriction": {
         "file": "11 Ограничение ХК.xlsx",
-        "cost": 250.0,
-        "risk_base": 0.10,
+        "cost_tier": 4,   # принудительная мера
     },
     "court_application": {
         "file": "12 Заявление о выдаче судебного приказа ХК.xlsx",
-        "cost": 1200.0,
-        "risk_base": 0.15,
+        "cost_tier": 5,   # судебная процедура — максимальные затраты
     },
 }
 
@@ -568,39 +562,7 @@ def predict_expected_recovery(
 
 
 # ---------------------------------------------------------------------------
-# Риск-штраф (сегментно-зависимый)
-# ---------------------------------------------------------------------------
-
-SEGMENT_RISK_FACTOR = {
-    # Сегменты из kprototypes: 0=суд/просрочка, 1=средняя, 2=временная, 3=незначительная, 4=нет долга, 5=мелкая
-    0: 1.5,   # высокий риск: уже в суде, тяжёлые методы могут не дать эффекта
-    1: 1.0,
-    2: 0.8,
-    3: 0.5,
-    4: 0.3,   # нет долга — низкий риск штрафа
-    5: 0.4,
-    -1: 1.0,  # неизвестный сегмент
-}
-
-
-def compute_risk_penalty(
-    features: pd.DataFrame,
-    risk_base: float,
-    dz_threshold_low: float = 500.0,
-) -> np.ndarray:
-    """
-    risk_penalty = risk_base * segment_factor * dz_penalty.
-    Высокий penalty для дорогих мер при малой ДЗ (суд при долге < 500р = плохая идея).
-    """
-    seg = features["segment"].fillna(-1).astype(int).map(SEGMENT_RISK_FACTOR).fillna(1.0).values
-    dz = features["DZ_current"].fillna(0).clip(lower=0).values
-    # Штраф за малую ДЗ: если ДЗ < threshold — умножаем риск
-    dz_factor = np.where(dz < dz_threshold_low, 3.0, 1.0)
-    return risk_base * seg * dz_factor
-
-
-# ---------------------------------------------------------------------------
-# Матрица utility
+# Матрица expected_recovery_gain
 # ---------------------------------------------------------------------------
 
 def build_utility_matrix(
@@ -608,23 +570,27 @@ def build_utility_matrix(
     models: Dict[str, Tuple[lgb.Booster, lgb.Booster]],
 ) -> pd.DataFrame:
     """
-    Строит матрицу utility(i,m) = uplift(i,m) * expected_recovery(i,m) - cost(m) - risk_penalty(i,m).
-    Возвращает датафрейм shape [n_ls, n_measures].
+    Строит матрицу скоров по мерам. Для каждой меры сохраняет:
+      uplift_<m>                  : mu1(X) - mu0(X) — каузальный прирост вероятности оплаты
+      expected_recovery_gain_<m>  : uplift × avg_accrual_12m — прирост ожидаемого возврата в руб. (из данных)
+      cost_tier_<m>               : порядковая шкала ресурсоёмкости меры (1=дёшево, 5=суд)
+
+    Рублёвая себестоимость мер не вычитается — реальные тарифы не предоставлены.
+    Ранжирование мер: сначала по убыванию expected_recovery_gain, при равенстве — меньший cost_tier.
     """
     result = features[["ls", "segment"]].copy()
+    avg_accrual = features["avg_accrual_12m"].fillna(0).clip(lower=0).values
 
     for measure_name, (mu1, mu0) in models.items():
         meta = MEASURE_META[measure_name]
-        cost = meta["cost"]
-        risk_base = meta["risk_base"]
 
         uplift = predict_uplift(features, mu1, mu0)
-        expected_rec = predict_expected_recovery(features, mu1)
-        risk_pen = compute_risk_penalty(features, risk_base)
+        # Прирост ожидаемого возврата: насколько больше вернём благодаря мере × средний месячный счёт
+        expected_recovery_gain = uplift * avg_accrual
 
-        utility = uplift * expected_rec - cost - risk_pen * expected_rec
         result[f"uplift_{measure_name}"] = uplift.round(4)
-        result[f"utility_{measure_name}"] = utility.round(2)
+        result[f"expected_recovery_gain_{measure_name}"] = expected_recovery_gain.round(2)
+        result[f"cost_tier_{measure_name}"] = meta["cost_tier"]
 
     return result
 
@@ -720,10 +686,10 @@ def run(
     utility_df.to_parquet(utility_parquet, index=False)
     log.info("Матрица utility сохранена: %s (%d ЛС × %d столбцов)", utility_csv, len(utility_df), len(utility_df.columns))
 
-    # Быстрая статистика по utility
-    utility_cols = [c for c in utility_df.columns if c.startswith("utility_")]
-    log.info("\nСтатистика utility по мерам:")
-    log.info("\n%s", utility_df[utility_cols].describe().round(2).to_string())
+    # Быстрая статистика по expected_recovery_gain
+    gain_cols = [c for c in utility_df.columns if c.startswith("expected_recovery_gain_")]
+    log.info("\nСтатистика expected_recovery_gain по мерам (руб., из данных):")
+    log.info("\n%s", utility_df[gain_cols].describe().round(2).to_string())
 
     log.info("\nГотово!")
 

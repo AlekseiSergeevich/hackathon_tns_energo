@@ -1,0 +1,34 @@
+# Себестоимость мер воздействия
+#
+# cost_tier — порядковая шкала (1=минимальная, 5=максимальная).
+# Используется для ранжирования при прочих равных: при одинаковом expected_recovery_gain
+# предпочитается мера с меньшим cost_tier.
+#
+# cost_rub — ОПЦИОНАЛЬНО. Заполняется, когда бизнес предоставит реальные тарифы.
+# До получения тарифов оставить пустым (null), чтобы не вводить данные в заблуждение.
+
+cost_tiers:
+  autodial: 1
+  email: 1
+  sms: 1
+  operator_call: 3
+  claim: 3
+  restriction_notice: 2
+  visit: 4
+  restriction: 4
+  court_application: 5
+  court_result: 5
+
+# Опциональный оверрайд: реальная себестоимость в рублях за 1 воздействие.
+# Пример заполнения (закомментирован):
+# cost_rub:
+#   autodial: 3.50
+#   sms: 2.00
+#   email: 0.80
+#   operator_call: 85.00
+#   claim: 150.00
+#   restriction_notice: 60.00
+#   visit: 700.00
+#   restriction: 300.00
+#   court_application: 1500.00
+cost_rub: {}

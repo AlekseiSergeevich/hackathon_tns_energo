@@ -1,0 +1,135 @@
+# Критерии допустимости мер воздействия по Приложению №1
+# Источник: Readme.docx раздел «Приложение №1»
+#
+# Поля:
+#   min_overdue_months   : минимальный срок образования просроченной ДЗ (месяцы)
+#   max_overdue_months   : максимальный (null = без ограничения)
+#   min_dz               : минимальная сумма просроченной ДЗ, руб.
+#   max_dz               : максимальная (null = без ограничения)
+#   requires_phone       : нужен номер телефона (Yes/No/null = не важно)
+#   requires_email       : нужен e-mail адрес (Yes/No/null = не важно)
+#   requires_no_phone    : нужно ОТСУТСТВИЕ телефона (для претензии)
+#   requires_prev_stage  : требуется завершение предыдущей стадии (строка или null)
+#   dz_times_norm_min    : ДЗ должна превышать норматив потребления в N раз (null = не проверяем)
+#   is_background        : мера применяется в фоне постоянно (совместно с остальными)
+
+measures:
+  email:
+    min_overdue_months: 1
+    max_overdue_months: null
+    min_dz: 500
+    max_dz: null
+    requires_phone: null
+    requires_email: "Yes"
+    requires_no_phone: false
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: true           # E-mail применяется постоянно, в т.ч. совместно
+
+  sms:
+    min_overdue_months: 1
+    max_overdue_months: 2
+    min_dz: 500
+    max_dz: 2000
+    requires_phone: "Yes"
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: false
+
+  autodial:
+    min_overdue_months: 2
+    max_overdue_months: 6
+    min_dz: 500
+    max_dz: 1500
+    requires_phone: "Yes"
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: true           # Автодозвон применяется постоянно совместно с другими
+
+  operator_call:
+    min_overdue_months: 2
+    max_overdue_months: 6
+    min_dz: 1500
+    max_dz: null
+    requires_phone: "Yes"
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: false
+
+  claim:
+    min_overdue_months: 2
+    max_overdue_months: 6
+    min_dz: 500
+    max_dz: null
+    requires_phone: null
+    requires_email: null
+    requires_no_phone: true       # претензия — при отсутствии телефона ИЛИ недозвоне/отказе
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: false
+
+  visit:
+    # Выезд применяется в отдельных случаях (см. Readme раздел «Выезд к потребителю»)
+    # Упрощённый критерий: ДЗ > 2000 или ДЗ > 30000 или отсутствие движения > 12 мес.
+    min_overdue_months: 1
+    max_overdue_months: null
+    min_dz: 2000
+    max_dz: null
+    requires_phone: null
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: null
+    dz_times_norm_min: null
+    is_background: false
+
+  restriction_notice:
+    min_overdue_months: 1
+    max_overdue_months: null
+    min_dz: 1500
+    max_dz: null
+    requires_phone: null
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: "informing"   # должно быть Информирование без результата
+    dz_times_norm_min: 2               # ДЗ > 2× норматива потребления
+    is_background: false
+
+  restriction:
+    min_overdue_months: 1
+    max_overdue_months: null
+    min_dz: 1500
+    max_dz: null
+    requires_phone: null
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: "restriction_notice"  # после уведомления (20 дней)
+    dz_times_norm_min: null
+    is_background: false
+
+  court_application:
+    # Несколько порогов — берём минимальный применимый (OR-условия):
+    #   от 4 мес + ДЗ >= 10000
+    #   от 6 мес + ДЗ >= 4000
+    #   от 11 мес + ДЗ >= 2000
+    #   от 11 мес + ДЗ < 2000 — по решению Комиссии (не моделируем)
+    min_overdue_months: 4
+    max_overdue_months: null
+    min_dz: 2000
+    max_dz: null
+    requires_phone: null
+    requires_email: null
+    requires_no_phone: false
+    requires_prev_stage: "restriction_or_impossible"  # ограничение применено или невозможно
+    dz_times_norm_min: null
+    is_background: false
+    # Таблица multi-threshold (проверяется OR):
+    multi_threshold:
+      - {min_overdue_months: 4,  min_dz: 10000}
+      - {min_overdue_months: 6,  min_dz: 4000}
+      - {min_overdue_months: 11, min_dz: 2000}

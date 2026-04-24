@@ -12,3 +12,9 @@ pyarrow>=14.0
 
 # Notebooks (output/jupyter-notebook/response_uplift_analysis.ipynb)
 matplotlib>=3.7
+
+# Десктоп-интерфейс (interface.py)
+PySide6>=6.5
+
+# Конфиги рекомендаций (scripts/build_recommendations.py)
+PyYAML>=6.0

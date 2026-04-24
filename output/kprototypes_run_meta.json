@@ -1,8 +1,8 @@
 {
   "input_csv": "/Users/aleksejsuharev/Desktop/hackathon_tns_energo/output/kprototypes_features.csv",
-  "n_rows": 136620,
+  "n_rows": 150818,
   "n_clusters": 6,
-  "n_numeric": 33,
+  "n_numeric": 34,
   "n_categorical": 13,
   "numeric_columns": [
     "DZ_current",
@@ -18,6 +18,7 @@
     "dz_volatility_6m",
     "debt_to_accrual_ratio",
     "log1p_DZ_current",
+    "overdue_months",
     "payments_count_12m",
     "median_payment_amount_12m",
     "days_since_last_payment",
@@ -55,8 +56,8 @@
     "ever_in_court"
   ],
   "fit_sample_size": 50000,
-  "cost_on_fit": 1082465.9747093488,
-  "gamma": 0.4570254032216975,
-  "n_iter": 12,
+  "cost_on_fit": 1104424.2673472061,
+  "gamma": 0.4559066067746957,
+  "n_iter": 11,
   "random_state": 42
 }

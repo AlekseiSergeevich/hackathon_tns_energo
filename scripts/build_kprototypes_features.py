@@ -202,7 +202,7 @@ def load_osv_long(data_dir: Path) -> pd.DataFrame:
     return long_df
 
 
-def compute_osv_features(osv_long: pd.DataFrame, ctx: BuildContext) -> pd.DataFrame:
+def compute_osv_features(osv_long: pd.DataFrame, ctx: BuildContext) -> pd.DataFrame:  # noqa: C901
     current = (
         osv_long[osv_long["month"] == ctx.snapshot_month][["ls", "sz_start"]]
         .rename(columns={"sz_start": "DZ_current"})
@@ -267,6 +267,34 @@ def compute_osv_features(osv_long: pd.DataFrame, ctx: BuildContext) -> pd.DataFr
 
     features["debt_to_accrual_ratio"] = features["DZ_current"] / features["avg_accrual_12m"].replace(0, np.nan)
     features["log1p_DZ_current"] = np.log1p(features["DZ_current"].clip(lower=0))
+
+    # overdue_months — количество подряд идущих месяцев с недоплатой на снапшот.
+    # Нужно для Приложения №1 (критерии допустимости мер).
+    def _overdue_months(paid_series: pd.Series, accrual_series: pd.Series) -> int:
+        """Считает сколько последних месяцев подряд была недоплата (paid < accrual)."""
+        pairs = list(zip(paid_series.values, accrual_series.values))
+        count = 0
+        for paid, accrual in reversed(pairs):
+            if pd.isna(paid) or pd.isna(accrual) or float(paid) < float(accrual):
+                count += 1
+            else:
+                break
+        return count
+
+    _osv_for_overdue = (
+        osv_long[osv_long["month"] <= ctx.snapshot_month]
+        .sort_values(["ls", "month"])[["ls", "paid", "accrual"]]
+    )
+    overdue = (
+        _osv_for_overdue
+        .groupby("ls", dropna=False)[["paid", "accrual"]]
+        .apply(lambda g: _overdue_months(g["paid"], g["accrual"]))
+        .rename("overdue_months")
+        .reset_index()
+    )
+    features = features.merge(overdue, on="ls", how="left")
+    features["overdue_months"] = features["overdue_months"].fillna(0).astype(int)
+
     return features
 
 
