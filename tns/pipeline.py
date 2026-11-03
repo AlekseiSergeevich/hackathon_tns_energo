@@ -30,7 +30,7 @@ from typing import Callable
 import pandas as pd
 
 from tns.data import panel as panel_module
-from tns.data.loaders import REPO_ROOT, default_cache_dir, load_all, load_settings, summarize
+from tns.data.loaders import REPO_ROOT, default_cache_dir, load_all, load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -91,9 +91,14 @@ def _validate(ctx: RunContext) -> None:
             f"в данных нет месяца {ctx.month:%Y-%m}: ОСВ покрывает {first:%Y-%m}…{last:%Y-%m}. "
             "Укажите месяц из этого периода или положите в папку данных выгрузку с нужным месяцем."
         )
-    for row in summarize(ctx.raw).itertuples(index=False):
-        if row[-1] != "нет":
-            logger.warning("Таблица «%s», проблемы разбора: %s.", row[0], row[-1])
+    # Свежие предупреждения загрузчики уже вывели в лог; из кэша — повторяем здесь.
+    warnings = [p for table in ctx.raw.values() for p in table.attrs.get("problems", [])]
+    for table in ctx.raw.values():
+        if table.attrs.get("cached"):
+            for problem in table.attrs.get("problems", []):
+                logger.warning("%s", problem.message)
+    if warnings:
+        logger.info("Предупреждений по входным файлам: %d. Запуск продолжается.", len(warnings))
     if not ctx.rules_path.exists():
         logger.warning("Не найдена таблица правил «%s»: без неё не построить стадии и кандидатов.", ctx.rules_path)
 
@@ -184,7 +189,7 @@ def run_pipeline(ctx: RunContext, steps: list[Step] | None = None) -> list[StepR
             for name, table in tables.items():
                 ctx.tables[name] = table
                 ctx.out_dir.mkdir(parents=True, exist_ok=True)
-                table.to_parquet(ctx.out_dir / f"{name}.parquet", index=False)
+                panel_module.write_parquet(table, ctx.out_dir / f"{name}.parquet")
         except Exception as error:
             raise StepError(number, step, error) from error
         seconds = time.perf_counter() - started

@@ -10,10 +10,20 @@ import pytest
 import yaml
 
 from tns.data import loaders
+from tns.data.validator import ValidationError
 from tests.conftest import (
     INFO_HEADER, LIMITS_YAML, copy_without, default_osv_blocks, info_row,
     write_info, write_limits, write_measure, write_osv, write_payments, write_xlsx,
 )
+
+
+def lost(table: pd.DataFrame, column: str) -> int:
+    """Сколько значений колонки не прочиталось — по предупреждениям загрузчика."""
+    return sum(p.count for p in table.attrs["problems"] if p.column == column)
+
+
+def messages(table: pd.DataFrame) -> str:
+    return "\n".join(p.message for p in table.attrs["problems"])
 
 
 # ---------------------------------------------------------------------------
@@ -51,14 +61,15 @@ class TestInfo:
             info = loaders.read_info(data_dir)
         assert pd.isna(info.loc[0, "has_phone"])
         assert "Наличие телефона" in caplog.text
-        assert info.attrs["issues"]["нераспознанных значений «Наличие телефона»"] == 1
+        assert lost(info, "Наличие телефона") == 1
+        assert "строка 2 — «Возможно»" in messages(info)
 
     def test_duplicate_ls_keeps_first(self, data_dir, caplog):
         write_info(data_dir / loaders.INFO_FILE, [info_row(1, Наличие_телефона="Да"), info_row(1, Наличие_телефона="Нет")])
         with caplog.at_level(logging.WARNING):
             info = loaders.read_info(data_dir)
         assert len(info) == 1 and info.loc[0, "has_phone"] == True  # noqa: E712
-        assert info.attrs["issues"]["повторов ЛС"] == 1
+        assert "1 повтор ЛС" in messages(info)
 
     def test_row_without_ls_is_dropped(self, data_dir):
         write_info(data_dir / loaders.INFO_FILE, [info_row(1), info_row(None)])
@@ -104,7 +115,7 @@ class TestOsv:
             osv = loaders.read_osv(data_dir, settings)
         march = osv[(osv["ls"] == 20) & (osv["month"] == "2025-03-01")].iloc[0]
         assert march["saldo_start"] == 600
-        assert "повторяется в шапке" in caplog.text and "100.0 %" in caplog.text
+        assert "повторяется в шапке" in caplog.text and "100,0 %" in caplog.text
 
     def test_duplicate_month_drop(self, data_dir, settings):
         settings["osv"]["duplicate_month"] = "drop"
@@ -137,7 +148,7 @@ class TestOsv:
     def test_missing_metric(self, data_dir, settings):
         blocks, ls_values = default_osv_blocks()
         write_osv(data_dir / loaders.OSV_FILE, blocks[:1], ls_values, metrics=["СЗ на начало", "Начислено", "Что-то"])
-        with pytest.raises(ValueError, match="нет показателей: paid"):
+        with pytest.raises(ValueError, match="для месяца 2025-01 нет колонки «Оплачено»"):
             loaders.read_osv(data_dir, settings)
 
     def test_rows_without_ls_dropped_and_non_numbers_reported(self, data_dir, settings):
@@ -146,7 +157,7 @@ class TestOsv:
         write_osv(data_dir / loaders.OSV_FILE, blocks, [10, 20, None])
         osv = loaders.read_osv(data_dir, settings)
         assert sorted(osv["ls"].unique()) == [10, 20]
-        assert osv.attrs["issues"]["строк без номера ЛС"] == 1
+        assert lost(osv, "ЛС") == 1
 
     def test_unreadable_number_is_nan_and_reported(self, data_dir, settings):
         blocks, ls_values = default_osv_blocks()
@@ -154,7 +165,7 @@ class TestOsv:
         write_osv(data_dir / loaders.OSV_FILE, blocks, ls_values)
         osv = loaders.read_osv(data_dir, settings)
         assert osv.loc[(osv["ls"] == 10) & (osv["month"] == "2025-01-01"), "saldo_start"].isna().all()
-        assert osv.attrs["issues"]["значений не прочитано как число"] == 1
+        assert lost(osv, "СЗ на начало") == 1 and "строка 3 — «н/д»" in messages(osv)
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +195,14 @@ class TestPayments:
         with caplog.at_level(logging.WARNING):
             payments = loaders.read_payments(data_dir)
         assert len(payments) == 1
-        assert payments.attrs["issues"]["строк с неверной датой или суммой"] == 2
-        assert payments.attrs["issues"]["строк без номера ЛС"] == 1
+        assert lost(payments, "Дата оплаты") == 1 and lost(payments, "Сумма") == 1
+        assert lost(payments, "Номер") == 1
 
     def test_unknown_method_reported(self, data_dir):
         write_payments(data_dir / loaders.PAYMENTS_FILE, ["10;15.01.2025;100;карта"])
         payments = loaders.read_payments(data_dir)
         assert payments["payment_method"].isna().all()
-        assert payments.attrs["issues"]["нераспознанных способов оплаты"] == 1
+        assert lost(payments, "Способ оплаты") == 1
 
     def test_missing_column_message(self, data_dir):
         (data_dir / loaders.PAYMENTS_FILE).write_text("Номер;Дата оплаты;Сумма\n10;15.01.2025;100\n", encoding="utf-8-sig")
@@ -240,7 +251,9 @@ class TestMeasureEvents:
         ])
         events = loaders.read_measure_events(data_dir)
         assert events[events["measure"] == "claim"]["ls"].tolist() == [10]
-        assert events.attrs["issues"] == {"claim: строк с неверной датой": 1, "claim: строк без номера ЛС": 1}
+        assert {(p.file, p.column, p.count) for p in events.attrs["problems"]} == {
+            ("08 Претензия ХК.xlsx", "ЛС", 1), ("08 Претензия ХК.xlsx", "Дата", 1),
+        }
 
     def test_non_first_day_for_month_precision_warns(self, data_dir, caplog):
         write_measure(data_dir / loaders.MEASURE_FILES["sms"], "sms", [[10, datetime(2025, 1, 17)]])
@@ -250,7 +263,7 @@ class TestMeasureEvents:
 
     def test_missing_file_names_the_file(self, data_dir):
         (data_dir / loaders.MEASURE_FILES["sms"]).unlink()
-        with pytest.raises(FileNotFoundError, match="06 СМС ХК.xlsx"):
+        with pytest.raises(ValidationError, match="Не найден входной файл «06 СМС ХК.xlsx»"):
             loaders.read_measure_events(data_dir)
 
     def test_missing_column_names_file_and_column(self, data_dir):
@@ -384,11 +397,14 @@ class TestLoadAll:
         for name in first:
             pd.testing.assert_frame_equal(first[name], second[name])
 
-    def test_cache_keeps_issues(self, data_dir, settings, tmp_path):
+    def test_cache_keeps_problems(self, data_dir, settings, tmp_path):
+        write_payments(data_dir / loaders.PAYMENTS_FILE, ["10;15.01.2025;100;5", "10;15.01.2025;много;5"])
         cache = tmp_path / "cache"
-        loaders.load_all(data_dir, settings, cache)
+        first = loaders.load_all(data_dir, settings, cache)
         second = loaders.load_all(data_dir, settings, cache)
-        assert second["payments"].attrs["issues"] == {}
+        assert second["payments"].attrs["cached"]
+        assert second["payments"].attrs["problems"] == first["payments"].attrs["problems"]
+        assert lost(second["payments"], "Сумма") == 1
 
     def test_cache_reset_when_source_file_changes(self, data_dir, settings, tmp_path):
         cache = tmp_path / "cache"
