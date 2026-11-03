@@ -252,9 +252,13 @@ def build_tables(data_dir: Path | str, settings: dict, cache_dir: Path | str | N
     """Читает файлы 01–14 (load_all) и строит ls_info, panel и measure_events."""
     logger.info("Читаю файлы 01–14 из «%s».", data_dir)
     raw = load_all(data_dir, settings, cache_dir)
-    info, osv, payments, events = raw["info"], raw["osv"], raw["payments"], raw["events"]
-
     logger.info("Строю таблицы.")
+    return build_from_raw(raw, settings)
+
+
+def build_from_raw(raw: dict[str, pd.DataFrame], settings: dict) -> dict[str, pd.DataFrame]:
+    """ls_info, panel и measure_events из таблиц load_all."""
+    info, osv, payments, events = raw["info"], raw["osv"], raw["payments"], raw["events"]
     panel = build_panel(osv, payments, settings)
     return {
         "ls_info": build_ls_info(info, osv["ls"]),
@@ -272,7 +276,7 @@ def save_tables(tables: dict[str, pd.DataFrame], output_dir: Path | str, plan_mo
     return target
 
 
-def _parse_plan_month(text: str) -> pd.Timestamp:
+def parse_plan_month(text: str) -> pd.Timestamp:
     try:
         return pd.to_datetime(text, format="%Y-%m")
     except ValueError as error:
@@ -291,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         settings = load_settings(args.config)
-        plan_month = _parse_plan_month(args.month) if args.month else None
+        plan_month = parse_plan_month(args.month) if args.month else None
         cache_dir = None if args.no_cache else default_cache_dir(settings)
         tables = build_tables(args.data or REPO_ROOT / settings["paths"]["data_dir"], settings, cache_dir)
         first, last = tables["panel"]["month"].min(), tables["panel"]["month"].max()
