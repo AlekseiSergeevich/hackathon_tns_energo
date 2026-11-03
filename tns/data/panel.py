@@ -272,8 +272,15 @@ def save_tables(tables: dict[str, pd.DataFrame], output_dir: Path | str, plan_mo
     target = Path(output_dir) / f"{plan_month:%Y-%m}"
     target.mkdir(parents=True, exist_ok=True)
     for name, table in tables.items():
-        table.to_parquet(target / f"{name}.parquet", index=False)
+        write_parquet(table, target / f"{name}.parquet")
     return target
+
+
+def write_parquet(table: pd.DataFrame, path: Path) -> None:
+    """Пишет таблицу без attrs: pandas переносит их из исходных таблиц, а в parquet они не нужны."""
+    clean = table.copy(deep=False)
+    clean.attrs = {}
+    clean.to_parquet(path, index=False)
 
 
 def parse_plan_month(text: str) -> pd.Timestamp:
