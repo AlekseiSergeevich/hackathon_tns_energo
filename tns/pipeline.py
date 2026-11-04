@@ -1,15 +1,16 @@
-"""План мер на месяц: восемь шагов от файлов 01–14 до реестров.
+"""План мер на месяц: девять шагов от файлов 01–14 до реестров.
 
-    1 загрузка файлов 01–14     tns/data/loaders.py
+    1 загрузка файлов 01–14     tns/data/loaders.py (с проверкой, tns/data/validator.py)
     2 проверка данных           здесь
-    3 панель «ЛС × месяц»       tns/data/panel.py              → ls_info, panel, measure_events
-    4 стадии                    tns.rules.stages:build_stages  → stages
-    5 кандидаты на меры         tns.rules.engine:build_candidates → candidates
-    6 скор                      tns.ml.score:build_score       → score
-    7 аллокатор под лимиты      tns.alloc.allocator:build_plan → plan
-    8 реестры по мерам          tns.alloc.registries:write_registries (файлы Excel в папку месяца)
+    3 очистка и отчёт о качестве tns/data/quality.py           → quality, quality_examples, quality_report.xlsx
+    4 панель «ЛС × месяц»       tns/data/panel.py              → ls_info, panel, measure_events
+    5 стадии                    tns.rules.stages:build_stages  → stages
+    6 кандидаты на меры         tns.rules.engine:build_candidates → candidates
+    7 скор                      tns.ml.score:build_score       → score
+    8 аллокатор под лимиты      tns.alloc.allocator:build_plan → plan
+    9 реестры по мерам          tns.alloc.registries:write_registries (файлы Excel в папку месяца)
 
-Шаги 4–8 подключаются по имени «модуль:функция». Функция получает RunContext и возвращает
+Шаги 5–9 подключаются по имени «модуль:функция». Функция получает RunContext и возвращает
 таблицу (DataFrame), если шаг строит одну таблицу, словарь {имя: DataFrame} или None.
 Пока модуля или функции нет, шаг считается нереализованным, и пайплайн идёт дальше.
 Шаг, которому не хватает входных таблиц, пропускается.
@@ -30,6 +31,7 @@ from typing import Callable
 import pandas as pd
 
 from tns.data import panel as panel_module
+from tns.data import quality
 from tns.data.loaders import REPO_ROOT, default_cache_dir, load_all, load_settings
 
 logger = logging.getLogger(__name__)
@@ -103,6 +105,15 @@ def _validate(ctx: RunContext) -> None:
         logger.warning("Не найдена таблица правил «%s»: без неё не построить стадии и кандидатов.", ctx.rules_path)
 
 
+def _clean(ctx: RunContext) -> dict[str, pd.DataFrame]:
+    ctx.raw, report = quality.clean(ctx.raw, ctx.settings)
+    path = quality.write_report(report, ctx.out_dir, {
+        "Месяц плана": f"{ctx.month:%Y-%m}", "Папка с данными": str(ctx.data_dir),
+    })
+    logger.info("Отчёт о качестве данных: «%s».", path)
+    return {"quality": report.summary, "quality_examples": report.examples}
+
+
 def _build_panel(ctx: RunContext) -> dict[str, pd.DataFrame]:
     return panel_module.build_from_raw(ctx.raw, ctx.settings)
 
@@ -110,6 +121,7 @@ def _build_panel(ctx: RunContext) -> dict[str, pd.DataFrame]:
 STEPS: list[Step] = [
     Step("загрузка файлов 01–14", _load),
     Step("проверка данных", _validate),
+    Step("очистка данных и отчёт о качестве", _clean, produces=("quality", "quality_examples")),
     Step("панель «ЛС × месяц»", _build_panel, produces=("ls_info", "panel", "measure_events")),
     Step("стадии", "tns.rules.stages:build_stages",
          needs=("ls_info", "panel", "measure_events"), produces=("stages",)),

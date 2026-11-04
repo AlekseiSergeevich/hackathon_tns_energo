@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tns.data import quality
 from tns.data.loaders import MEASURE_FILES, REPO_ROOT, default_cache_dir, load_all, load_settings
 
 logger = logging.getLogger(__name__)
@@ -52,10 +53,8 @@ def _month_start(dates: pd.Series) -> pd.Series:
 
 def build_ls_info(info: pd.DataFrame, osv_ls: pd.Series) -> pd.DataFrame:
     """Анкета на все ЛС из файлов 01 и 02. ЛС только из 02 получают пустые флаги."""
+    # Сколько ЛС только в одном из файлов — в отчёте о качестве (Q-01, Q-02).
     only_in_osv = np.setdiff1d(osv_ls.unique(), info["ls"].to_numpy())
-    only_in_info = np.setdiff1d(info["ls"].to_numpy(), osv_ls.unique())
-    if len(only_in_osv) or len(only_in_info):
-        logger.warning("ЛС только в файле 02: %d, только в файле 01: %d.", len(only_in_osv), len(only_in_info))
     missing = pd.DataFrame({"ls": only_in_osv.astype("int64")})
     # concat с пустыми строками сохраняет типы колонок анкеты (boolean, category, string).
     result = pd.concat([info, missing.reindex(columns=info.columns).astype(info.dtypes)], ignore_index=True)
@@ -248,12 +247,13 @@ def build_measure_events(events: pd.DataFrame, panel: pd.DataFrame, payments: pd
 # Сборка и запись
 # ---------------------------------------------------------------------------
 
-def build_tables(data_dir: Path | str, settings: dict, cache_dir: Path | str | None = None) -> dict[str, pd.DataFrame]:
-    """Читает файлы 01–14 (load_all) и строит ls_info, panel и measure_events."""
+def build_tables(data_dir: Path | str, settings: dict, cache_dir: Path | str | None = None
+                 ) -> tuple[dict[str, pd.DataFrame], quality.QualityReport]:
+    """Читает файлы 01–14 (load_all), чистит их (quality.clean) и строит ls_info, panel и measure_events."""
     logger.info("Читаю файлы 01–14 из «%s».", data_dir)
-    raw = load_all(data_dir, settings, cache_dir)
+    raw, report = quality.clean(load_all(data_dir, settings, cache_dir), settings)
     logger.info("Строю таблицы.")
-    return build_from_raw(raw, settings)
+    return build_from_raw(raw, settings), report
 
 
 def build_from_raw(raw: dict[str, pd.DataFrame], settings: dict) -> dict[str, pd.DataFrame]:
@@ -304,7 +304,8 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.config)
         plan_month = parse_plan_month(args.month) if args.month else None
         cache_dir = None if args.no_cache else default_cache_dir(settings)
-        tables = build_tables(args.data or REPO_ROOT / settings["paths"]["data_dir"], settings, cache_dir)
+        data_dir = args.data or REPO_ROOT / settings["paths"]["data_dir"]
+        tables, report = build_tables(data_dir, settings, cache_dir)
         first, last = tables["panel"]["month"].min(), tables["panel"]["month"].max()
         plan_month = plan_month if plan_month is not None else last
         if not first <= plan_month <= last:
@@ -313,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"{plan_month:%Y-%m}", f"{first:%Y-%m}", f"{last:%Y-%m}",
             )
         target = save_tables(tables, args.out or REPO_ROOT / settings["paths"]["output_dir"], plan_month)
+        quality.write_report(report, target, {"Папка с данными": str(data_dir)})
     except (OSError, ValueError, KeyError) as error:
         logger.error("Таблицы не построены: %s", error)
         return 1

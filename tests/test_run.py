@@ -40,8 +40,11 @@ class TestCommandLine:
         with caplog.at_level(logging.INFO):
             assert run(data_dir, tmp_path / "out", config) == 0
         month_dir = tmp_path / "out" / "2025-02"
-        assert sorted(p.name for p in month_dir.iterdir()) == ["ls_info.parquet", "measure_events.parquet", "panel.parquet"]
-        assert "Шаг 4/8: стадии — пока не реализован" in caplog.text
+        assert sorted(p.name for p in month_dir.iterdir()) == [
+            "ls_info.parquet", "measure_events.parquet", "panel.parquet",
+            "quality.parquet", "quality_examples.parquet", "quality_report.xlsx",
+        ]
+        assert "Шаг 5/9: стадии — пока не реализован" in caplog.text
         assert "План на 2025-02 не построен" in caplog.text
 
     def test_written_tables_follow_contract(self, data_dir, tmp_path, config):
@@ -79,7 +82,7 @@ class TestCommandLine:
             capture_output=True, text=True, encoding="utf-8", cwd=tmp_path,
         )
         assert done.returncode == 0, done.stderr
-        assert "Шаг 8/8" in done.stderr
+        assert "Шаг 9/9" in done.stderr
 
 
 class TestSteps:
@@ -113,7 +116,7 @@ class TestSteps:
         fake_module(monkeypatch, "tns.alloc.registries", write_registries=registries)
 
         results = pipeline.run_pipeline(ctx)
-        assert [r.status for r in results] == [pipeline.DONE] * 8
+        assert [r.status for r in results] == [pipeline.DONE] * 9
         for name in ("stages", "candidates", "score", "plan"):
             assert (ctx.out_dir / f"{name}.parquet").exists()
         assert (ctx.out_dir / "sms.xlsx").exists()
@@ -130,19 +133,19 @@ class TestSteps:
 
     def test_module_without_function_is_not_implemented(self, ctx, monkeypatch):
         fake_module(monkeypatch, "tns.rules.stages")
-        assert pipeline.run_pipeline(ctx)[3].status == pipeline.NOT_IMPLEMENTED
+        assert pipeline.run_pipeline(ctx)[4].status == pipeline.NOT_IMPLEMENTED
 
     def test_not_implemented_error_is_not_implemented(self, ctx, monkeypatch):
         def stages(c):
             raise NotImplementedError
         fake_module(monkeypatch, "tns.rules.stages", build_stages=stages)
-        assert pipeline.run_pipeline(ctx)[3].status == pipeline.NOT_IMPLEMENTED
+        assert pipeline.run_pipeline(ctx)[4].status == pipeline.NOT_IMPLEMENTED
 
     def test_step_error_names_step(self, ctx, monkeypatch):
         def stages(c):
             raise ValueError("в листе «Стадии» нет S0")
         fake_module(monkeypatch, "tns.rules.stages", build_stages=stages)
-        with pytest.raises(pipeline.StepError, match="Шаг 4 «стадии»: в листе «Стадии» нет S0"):
+        with pytest.raises(pipeline.StepError, match="Шаг 5 «стадии»: в листе «Стадии» нет S0"):
             pipeline.run_pipeline(ctx)
 
     def test_wrong_tables_returned(self, ctx, monkeypatch):
