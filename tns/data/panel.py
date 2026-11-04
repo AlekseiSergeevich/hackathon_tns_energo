@@ -21,26 +21,47 @@ import numpy as np
 import pandas as pd
 
 from tns.data import quality
-from tns.data.loaders import MEASURE_FILES, REPO_ROOT, default_cache_dir, load_all, load_settings
+from tns.data.loaders import (
+    DATE_PRECISIONS, HOUSE_TYPES, MEASURE_FILES, REPO_ROOT, check_schema, default_cache_dir, load_all,
+    load_settings,
+)
 
 logger = logging.getLogger(__name__)
 
 WINDOW_MONTH_ENDS = {"month_end": 1, "next_month_end": 2}
 KOPECK = 0.005  # суммы меньше полкопейки считаем нулём: это погрешность float
 
-LS_INFO_COLUMNS = [
-    "ls", "has_phone", "has_ebill", "has_benefits", "not_residing",
-    "remote_disconnect", "house_type", "gasified", "address_guid",
-]
-PANEL_COLUMNS = [
-    "ls", "month", "saldo_start", "dz", "dz_overdue", "overdue_m", "overdue_censored",
+NORM_SOURCES = ["customer", "proxy"]
+
+# Контракт docs/interfaces.md, разделы 1–3: колонки по порядку и их типы (список — category).
+OUTPUT_SCHEMAS: dict[str, dict[str, str | list[str]]] = {
+    "ls_info": {
+        "ls": "int64", "has_phone": "boolean", "has_ebill": "boolean", "has_benefits": "boolean",
+        "not_residing": "boolean", "remote_disconnect": "boolean", "house_type": HOUSE_TYPES,
+        "gasified": "boolean", "address_guid": "string",
+    },
+    "panel": {
+        "ls": "int64", "month": "datetime64[ns]", "saldo_start": "float64", "dz": "float64",
+        "dz_overdue": "float64", "overdue_m": "Int64", "overdue_censored": "boolean",
+        "months_no_payment": "Int64", "months_no_payment_censored": "boolean", "norm": "float64",
+        "norm_source": NORM_SOURCES, "accrual": "float64", "paid": "float64", "paid_payments": "float64",
+        "pay30_m": "boolean",
+    },
+    "measure_events": {
+        "ls": "int64", "measure": list(MEASURE_FILES), "month": "datetime64[ns]", "event_date": "datetime64[ns]",
+        "date_precision": DATE_PRECISIONS, "n_raw": "int64", "dz_at_event": "float64",
+        "window_end": "datetime64[ns]", "paid_in_window": "float64", "result_30pct": "boolean",
+    },
+}
+OUTPUT_KEYS = {"ls_info": ["ls"], "panel": ["ls", "month"], "measure_events": ["ls", "measure", "month"]}
+# Колонки панели, известные на 01.M (known_at = start): только они годятся в признаки среза M.
+PANEL_START_COLUMNS = [
+    "saldo_start", "dz", "dz_overdue", "overdue_m", "overdue_censored",
     "months_no_payment", "months_no_payment_censored", "norm", "norm_source",
-    "accrual", "paid", "paid_payments", "pay30_m",
 ]
-EVENT_COLUMNS = [
-    "ls", "measure", "month", "event_date", "date_precision", "n_raw",
-    "dz_at_event", "window_end", "paid_in_window", "result_30pct",
-]
+LS_INFO_COLUMNS = list(OUTPUT_SCHEMAS["ls_info"])
+PANEL_COLUMNS = list(OUTPUT_SCHEMAS["panel"])
+EVENT_COLUMNS = list(OUTPUT_SCHEMAS["measure_events"])
 
 
 def _month_start(dates: pd.Series) -> pd.Series:
@@ -191,7 +212,7 @@ def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd
     panel["months_no_payment_censored"] = pd.Series(no_payment_censored[row, col], index=panel.index).astype("boolean")
     panel["norm"] = norm[row, col]
     # Выгрузки заказчика пока нет. Когда появится, её значения получат метку customer.
-    panel["norm_source"] = pd.Categorical(np.where(np.isnan(panel["norm"]), None, "proxy"), categories=["customer", "proxy"])
+    panel["norm_source"] = pd.Categorical(np.where(np.isnan(panel["norm"]), None, "proxy"), categories=NORM_SOURCES)
     panel["paid_payments"] = payments_matrix[row, col]
     panel["pay30_m"] = _reached_share(panel["paid_payments"], panel["dz"], settings["result"]["share"])
     panel["month"] = panel["month"].astype("datetime64[ns]")
@@ -257,14 +278,17 @@ def build_tables(data_dir: Path | str, settings: dict, cache_dir: Path | str | N
 
 
 def build_from_raw(raw: dict[str, pd.DataFrame], settings: dict) -> dict[str, pd.DataFrame]:
-    """ls_info, panel и measure_events из таблиц load_all."""
+    """ls_info, panel и measure_events из таблиц load_all. Каждая проверяется по контракту."""
     info, osv, payments, events = raw["info"], raw["osv"], raw["payments"], raw["events"]
     panel = build_panel(osv, payments, settings)
-    return {
+    tables = {
         "ls_info": build_ls_info(info, osv["ls"]),
         "panel": panel,
         "measure_events": build_measure_events(events, panel, payments, settings),
     }
+    for name, table in tables.items():
+        check_schema(name, table, OUTPUT_SCHEMAS, OUTPUT_KEYS[name])
+    return tables
 
 
 def save_tables(tables: dict[str, pd.DataFrame], output_dir: Path | str, plan_month: pd.Timestamp) -> Path:

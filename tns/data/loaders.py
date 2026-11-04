@@ -595,10 +595,11 @@ def read_limits(data_dir: Path, settings: dict) -> pd.DataFrame:
 # Проверка типов и кэш
 # ---------------------------------------------------------------------------
 
-def check_schema(name: str, df: pd.DataFrame) -> None:
-    """Проверяет колонки и типы таблицы по SCHEMAS. Ошибка — если что-то не совпадает."""
+def check_schema(name: str, df: pd.DataFrame, schemas: dict | None = None, keys: list[str] | None = None) -> None:
+    """Проверяет колонки, их порядок и типы таблицы по схеме (по умолчанию SCHEMAS) и уникальность keys."""
+    schema = (SCHEMAS if schemas is None else schemas)[name]
     problems = []
-    for column, expected in SCHEMAS[name].items():
+    for column, expected in schema.items():
         if column not in df.columns:
             problems.append(f"нет колонки «{column}»")
             continue
@@ -608,11 +609,15 @@ def check_schema(name: str, df: pd.DataFrame) -> None:
                 problems.append(f"«{column}»: ожидалась category {expected}, получено {dtype}")
         elif str(dtype) != expected:
             problems.append(f"«{column}»: ожидался тип {expected}, получено {dtype}")
-    extra = [c for c in df.columns if c not in SCHEMAS[name]]
+    extra = [c for c in df.columns if c not in schema]
     if extra:
         problems.append(f"лишние колонки: {', '.join(extra)}")
+    elif list(df.columns) != [c for c in schema if c in df.columns]:
+        problems.append(f"порядок колонок не как в контракте: {', '.join(schema)}")
     if "ls" in df.columns and df["ls"].isna().any():
         problems.append("есть пустые ЛС")
+    if keys and not problems and df.duplicated(keys).any():
+        problems.append(f"повторяются ключи ({', '.join(keys)}): {int(df.duplicated(keys).sum())} строк")
     if problems:
         raise ValueError(f"Таблица «{name}» не соответствует docs/interfaces.md: {'; '.join(problems)}.")
 
