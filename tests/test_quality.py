@@ -10,46 +10,10 @@ import yaml
 from tns import pipeline
 from tns.data import loaders, panel, quality
 from tns.data.validator import WARNING, Problem
+from tests.conftest import make_events, make_info, make_osv, make_payments
 
 AS_OF = pd.Timestamp("2025-06-30")
 CHECKS = [f"Q-{i:02d}" for i in range(1, 18)]
-
-
-def make_info(ls_values) -> pd.DataFrame:
-    n = len(ls_values)
-    info = pd.DataFrame({"ls": pd.Series(ls_values, dtype="int64")})
-    for flag in loaders.INFO_FLAGS:
-        info[flag] = pd.array([False] * n, dtype="boolean")
-    info["house_type"] = pd.Categorical(["МКД"] * n, categories=loaders.HOUSE_TYPES)
-    info["address_guid"] = pd.array([f"g{ls}" for ls in ls_values], dtype="string")
-    return info
-
-
-def make_osv(rows: dict[int, list[tuple[float, float, float]]]) -> pd.DataFrame:
-    """{ЛС: [(сальдо, начислено, оплачено) по месяцам с 2025-01]}."""
-    records = [
-        {"ls": ls, "month": pd.Timestamp("2025-01-01") + pd.DateOffset(months=i), "saldo_start": s, "accrual": a, "paid": p}
-        for ls, months in rows.items() for i, (s, a, p) in enumerate(months)
-    ]
-    return pd.DataFrame(records).astype({
-        "ls": "int64", "month": "datetime64[ns]", "saldo_start": "float64", "accrual": "float64", "paid": "float64",
-    })
-
-
-def make_payments(rows) -> pd.DataFrame:
-    """[(ЛС, дата, сумма, способ)]."""
-    frame = pd.DataFrame(rows, columns=["ls", "payment_date", "amount", "payment_method"])
-    return frame.astype({"ls": "int64", "payment_date": "datetime64[ns]", "amount": "float64", "payment_method": "Int64"})
-
-
-def make_events(rows) -> pd.DataFrame:
-    """[(ЛС, мера, дата)]."""
-    frame = pd.DataFrame(rows, columns=["ls", "measure", "event_date"]).astype({"ls": "int64", "event_date": "datetime64[ns]"})
-    frame["measure"] = pd.Categorical(frame["measure"], categories=list(loaders.MEASURE_FILES))
-    frame["date_precision"] = pd.Categorical(
-        ["month" if m in loaders.MONTH_PRECISION_MEASURES else "day" for m in frame["measure"]], categories=["month", "day"]
-    )
-    return frame
 
 
 @pytest.fixture
