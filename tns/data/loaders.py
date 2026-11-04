@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SETTINGS = REPO_ROOT / "configs" / "settings.yaml"
 # Меняйте при любом изменении чтения или типов, чтобы старый кэш не использовался.
-LOADER_VERSION = 2
+LOADER_VERSION = 3
 
 INFO_FILE = "01 Общая информация о ЛС ХК.xlsx"
 OSV_FILE = "02 Обортно-сальдовая ведомость ЛС ХК.xlsx"
@@ -214,9 +214,11 @@ def read_info(data_dir: Path) -> pd.DataFrame:
         conflicts = df.groupby("ls")[columns].nunique(dropna=False).gt(1).any(axis=1).sum()
         differ = (f"у {validator.number(int(conflicts))} ЛС повторы различаются" if conflicts
                   else "содержимое повторов одинаковое")
-        _warn(problems, validator.warning(INFO_FILE, (
-            f"В файле «{INFO_FILE}» {validator.repeats(int(duplicated.sum()))} ЛС, оставлена первая строка ({differ})."
-        ), "ЛС"))
+        _warn(problems, Problem(
+            validator.WARNING, INFO_FILE,
+            f"В файле «{INFO_FILE}» {validator.repeats(int(duplicated.sum()))} ЛС, оставлена первая строка ({differ}).",
+            column="ЛС", count=int(duplicated.sum()), total=len(df), blocking=False,
+        ))
         df = df.loc[~duplicated]
     rows = df.index + 2
 
@@ -312,9 +314,11 @@ def read_osv(data_dir: Path, settings: dict) -> pd.DataFrame:
     body = _clean_ls(body, ls_column, OSV_FILE, body.index + 3, problems)
     duplicated = body.duplicated("ls")
     if duplicated.any():
-        _warn(problems, validator.warning(OSV_FILE, (
-            f"В файле «{OSV_FILE}» {validator.repeats(int(duplicated.sum()))} ЛС, оставлена первая строка."
-        ), "ЛС"))
+        _warn(problems, Problem(
+            validator.WARNING, OSV_FILE,
+            f"В файле «{OSV_FILE}» {validator.repeats(int(duplicated.sum()))} ЛС, оставлена первая строка.",
+            column="ЛС", count=int(duplicated.sum()), total=len(body), blocking=False,
+        ))
         body = body.loc[~duplicated]
 
     known_months = {month for month, _ in blocks}
