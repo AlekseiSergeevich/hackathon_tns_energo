@@ -28,7 +28,10 @@ from tns.data.loaders import (
 
 logger = logging.getLogger(__name__)
 
+# Окно результата меры (P-04): month_end — до конца месяца меры, next_month_end — до конца следующего,
+# days — N дней начиная с дня меры (N = result.days).
 WINDOW_MONTH_ENDS = {"month_end": 1, "next_month_end": 2}
+WINDOW_KINDS = [*WINDOW_MONTH_ENDS, "days"]
 KOPECK = 0.005  # суммы меньше полкопейки считаем нулём: это погрешность float
 
 NORM_SOURCES = ["customer", "proxy"]
@@ -214,7 +217,7 @@ def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd
     # Выгрузки заказчика пока нет. Когда появится, её значения получат метку customer.
     panel["norm_source"] = pd.Categorical(np.where(np.isnan(panel["norm"]), None, "proxy"), categories=NORM_SOURCES)
     panel["paid_payments"] = payments_matrix[row, col]
-    panel["pay30_m"] = _reached_share(panel["paid_payments"], panel["dz"], settings["result"]["share"])
+    panel["pay30_m"] = _reached_share(panel["paid_payments"], panel["dz"], check_result_settings(settings)[0])
     panel["month"] = panel["month"].astype("datetime64[ns]")
     return panel[PANEL_COLUMNS]
 
@@ -223,11 +226,29 @@ def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd
 # measure_events
 # ---------------------------------------------------------------------------
 
+def check_result_settings(settings: dict) -> tuple[float, str, int | None]:
+    """Параметры результата (P-03, P-04) из раздела result настроек: доля X, вид окна и N дней."""
+    result = settings["result"]
+    share, window, days = result.get("share"), result.get("window"), result.get("days")
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= 1:
+        raise ValueError(f"result.share — доля долга от 0 до 1 (например, 0.30 — это 30 %), а указано «{share}».")
+    if window not in WINDOW_KINDS:
+        raise ValueError(f"Неизвестное значение result.window: «{window}». Можно: {', '.join(WINDOW_KINDS)}.")
+    if window == "days":
+        if isinstance(days, bool) or not isinstance(days, int) or days < 1:
+            raise ValueError(f"result.days — целое число дней не меньше 1 (окно result.window: days), а указано «{days}».")
+        return float(share), window, days
+    return float(share), window, None
+
+
 def build_measure_events(events: pd.DataFrame, panel: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd.DataFrame:
-    """Журнал мер: не больше одной строки на ЛС × мера × месяц, с результатом меры."""
-    window = settings["result"]["window"]
-    if window not in WINDOW_MONTH_ENDS:
-        raise ValueError(f"Неизвестное значение result.window: «{window}».")
+    """Журнал мер: не больше одной строки на ЛС × мера × месяц, с результатом меры (P-03, P-04).
+
+    Результат = оплачено в окне ≥ result.share × долга на 01 месяца меры. Окно открывается в день меры
+    (для мер с точностью «месяц» — 1-го числа) и закрывается по result.window. Если окно кончается
+    позже последнего месяца данных, результат ещё неизвестен: <NA>.
+    """
+    share, window, days = check_result_settings(settings)
 
     grouped = events.assign(month=_month_start(events["event_date"])).groupby(
         ["ls", "measure", "month"], as_index=False, observed=True
@@ -248,17 +269,27 @@ def build_measure_events(events: pd.DataFrame, panel: pd.DataFrame, payments: pd
     outside = log["dz_at_event"].isna()
     if outside.any():
         logger.warning("Журнал мер: %d строк без долга на месяц меры (ЛС или месяца нет в панели).", int(outside.sum()))
-    log["window_end"] = (log["month"] + pd.offsets.MonthEnd(WINDOW_MONTH_ENDS[window])).astype("datetime64[ns]")
-
     # Для мер с точностью «месяц» точной даты нет, поэтому окно открывается с 1-го числа.
     is_month = log["date_precision"] == "month"
     starts = log["event_date"].where(~is_month, log["month"])
+    if window == "days":
+        log["window_end"] = (starts + pd.Timedelta(days=days - 1)).astype("datetime64[ns]")
+    else:
+        log["window_end"] = (log["month"] + pd.offsets.MonthEnd(WINDOW_MONTH_ENDS[window])).astype("datetime64[ns]")
     windows = pd.DataFrame({"event": log.index, "ls": log["ls"], "start": starts, "end": log["window_end"]})
     matched = windows.merge(payments[["ls", "payment_date", "amount"]], on="ls", how="inner")
     matched = matched[(matched["payment_date"] >= matched["start"]) & (matched["payment_date"] <= matched["end"])]
     log["paid_in_window"] = matched.groupby("event")["amount"].sum().reindex(log.index, fill_value=0.0).astype("float64")
 
-    log["result_30pct"] = _reached_share(log["paid_in_window"], log["dz_at_event"], settings["result"]["share"])
+    log["result_30pct"] = _reached_share(log["paid_in_window"], log["dz_at_event"], share)
+    data_end = panel["month"].max() + pd.offsets.MonthEnd(1)
+    open_window = log["window_end"] > data_end
+    if open_window.any():
+        logger.info(
+            "Журнал мер: у %d мер окно результата кончается после %s (конец данных), результат пока неизвестен.",
+            int(open_window.sum()), f"{data_end:%d.%m.%Y}",
+        )
+        log["result_30pct"] = log["result_30pct"].mask(open_window, pd.NA)
     log["month"] = log["month"].astype("datetime64[ns]")
     log["event_date"] = log["event_date"].astype("datetime64[ns]")
     return log.sort_values(["ls", "measure", "month"], ignore_index=True)[EVENT_COLUMNS]
