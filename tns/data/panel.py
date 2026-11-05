@@ -157,7 +157,11 @@ def _months_without_payment(payments: np.ndarray) -> tuple[np.ndarray, np.ndarra
 
 
 def _proxy_norm(accrual: np.ndarray, window: int, min_months: int) -> np.ndarray:
-    """Прокси норматива: среднее начисление за доступные месяцы ≤ M−1 (до window, минимум min_months)."""
+    """Прокси норматива: среднее начисление за доступные месяцы ≤ M−1 (до window, минимум min_months).
+
+    Если среднее ≤ 0 (перерасчёты перевесили начисления или начислений не было), норматив не
+    определить: NaN. Иначе условие dz > P-08 × norm выполнялось бы при любом долге.
+    """
     norm = np.full(accrual.shape, np.nan)
     known = ~np.isnan(accrual)
     values = np.nan_to_num(accrual)
@@ -166,11 +170,32 @@ def _proxy_norm(accrual: np.ndarray, window: int, min_months: int) -> np.ndarray
         count = known[:, start:t].sum(axis=1)
         enough = count >= min_months
         norm[enough, t] = values[enough, start:t].sum(axis=1) / count[enough]
+    not_positive = norm <= 0
+    if not_positive.any():
+        logger.info("Прокси норматива ≤ 0 (нет начислений или перерасчёты), норматив не определён: %d строк.",
+                    int(not_positive.sum()))
+        norm[not_positive] = np.nan
     return norm
 
 
-def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd.DataFrame:
-    """Панель «ЛС × месяц» из длинной ОСВ (read_osv) и оплат (read_payments)."""
+def _customer_norm(panel: pd.DataFrame, customer: pd.DataFrame | None) -> pd.Series:
+    """Норматив заказчика на каждую строку панели: последнее значение с месяцем ≤ M (без месяца — для всех)."""
+    result = pd.Series(np.nan, index=panel.index, dtype="float64")
+    if customer is None or customer.empty:
+        return result
+    unknown = np.setdiff1d(customer["ls"].unique(), panel["ls"].unique())
+    if len(unknown):
+        logger.warning("Норматив заказчика: %d ЛС нет в ОСВ, их значения не используются.", len(unknown))
+    values = customer.assign(month=customer["month"].fillna(pd.Timestamp("1900-01-01"))).sort_values("month")
+    left = panel[["ls", "month"]].reset_index().sort_values("month")
+    merged = pd.merge_asof(left, values, on="month", by="ls", direction="backward")
+    result[merged["index"].to_numpy()] = merged["norm"].to_numpy()
+    return result
+
+
+def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict,
+                customer_norm: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Панель «ЛС × месяц» из длинной ОСВ (read_osv), оплат (read_payments) и выгрузки норматива (если есть)."""
     if settings["overdue"]["allocation"] != "fifo":
         raise ValueError(f"Неизвестное значение overdue.allocation: «{settings['overdue']['allocation']}». Сейчас поддерживается только fifo.")
 
@@ -213,9 +238,12 @@ def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict) -> pd
     panel["overdue_censored"] = pd.Series(overdue_censored[row, col], index=panel.index).astype("boolean").mask(panel["dz"].isna(), pd.NA)
     panel["months_no_payment"] = pd.Series(no_payment[row, col], index=panel.index).astype("Int64")
     panel["months_no_payment_censored"] = pd.Series(no_payment_censored[row, col], index=panel.index).astype("boolean")
-    panel["norm"] = norm[row, col]
-    # Выгрузки заказчика пока нет. Когда появится, её значения получат метку customer.
-    panel["norm_source"] = pd.Categorical(np.where(np.isnan(panel["norm"]), None, "proxy"), categories=NORM_SOURCES)
+    # Норматив (P-07): значение из выгрузки заказчика, где оно есть, иначе прокси.
+    customer = _customer_norm(panel, customer_norm)
+    from_customer = customer.notna()
+    panel["norm"] = customer.where(from_customer, norm[row, col])
+    source = np.where(from_customer, "customer", np.where(panel["norm"].isna(), None, "proxy"))
+    panel["norm_source"] = pd.Categorical(source, categories=NORM_SOURCES)
     panel["paid_payments"] = payments_matrix[row, col]
     panel["pay30_m"] = _reached_share(panel["paid_payments"], panel["dz"], check_result_settings(settings)[0])
     panel["month"] = panel["month"].astype("datetime64[ns]")
@@ -311,7 +339,7 @@ def build_tables(data_dir: Path | str, settings: dict, cache_dir: Path | str | N
 def build_from_raw(raw: dict[str, pd.DataFrame], settings: dict) -> dict[str, pd.DataFrame]:
     """ls_info, panel и measure_events из таблиц load_all. Каждая проверяется по контракту."""
     info, osv, payments, events = raw["info"], raw["osv"], raw["payments"], raw["events"]
-    panel = build_panel(osv, payments, settings)
+    panel = build_panel(osv, payments, settings, raw.get("norm"))
     tables = {
         "ls_info": build_ls_info(info, osv["ls"]),
         "panel": panel,
