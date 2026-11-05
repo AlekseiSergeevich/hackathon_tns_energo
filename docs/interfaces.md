@@ -123,9 +123,11 @@
 | `date_precision` | category | `month` (autodial, email, sms, claim, visit — дата всегда 1-е) / `day` | справочник в коде | — |
 | `n_raw` | int64 | сколько строк было в исходном файле за месяц | 04–13 | end |
 | `dz_at_event` | float64 | `dz` на 01 месяца меры | panel | start |
-| `window_end` | datetime | конец окна результата (P-04): конец месяца меры | расчёт | — |
+| `window_end` | datetime | конец окна результата (P-04), включительно: по `result.window` — конец месяца меры (`month_end`, по умолчанию), конец следующего месяца (`next_month_end`) или N дней с начала окна (`days`, N = `result.days`) | расчёт | — |
 | `paid_in_window` | float64 | оплаты с `event_date` по `window_end` (для точности `month` — с 1-го числа) | 03 | end |
-| `result_30pct` | boolean | `paid_in_window ≥ 0.30 × dz_at_event` | расчёт | end |
+| `result_30pct` | boolean | результат меры (P-03): `paid_in_window ≥ X × dz_at_event`, X = `result.share` (сейчас 0.30). `<NA>`, если долга нет или окно кончается позже последнего месяца данных | расчёт | end |
+
+**Результат меры (P-03, P-04, DATA-6).** Параметры — раздел `result` в `configs/settings.yaml`: доля X (`share`), вид окна (`window`) и N дней (`days`). Окно открывается в день меры, для мер с точностью `month` — 1-го числа. Название колонки `result_30pct` историческое: при другом X в ней результат по новой доле.
 
 Кто читает: стадии (переходы T-2→3, T-3→4, даты цикла), движок (EX-06, EX-08, R-VST-03, P-09), ML (признаки по прошлым мерам, только месяцы ≤ M−1).
 
