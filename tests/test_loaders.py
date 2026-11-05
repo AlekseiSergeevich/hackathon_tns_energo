@@ -378,7 +378,7 @@ class TestSchema:
 class TestLoadAll:
     def test_one_call_reads_everything(self, data_dir, settings):
         tables = loaders.load_all(data_dir, settings)
-        assert list(tables) == ["info", "osv", "payments", "events", "limits"]
+        assert list(tables) == ["info", "osv", "payments", "events", "limits", "norm"]
 
     def test_missing_folder(self, tmp_path, settings):
         with pytest.raises(FileNotFoundError, match="Не найдена папка с данными"):
@@ -444,7 +444,7 @@ class TestLoadAll:
 class TestCommandLine:
     def test_summary_lists_every_table(self, data_dir, settings):
         summary = loaders.summarize(loaders.load_all(data_dir, settings))
-        assert summary["таблица"].tolist() == ["info", "osv", "payments", "events", "limits"]
+        assert summary["таблица"].tolist() == ["info", "osv", "payments", "events", "limits", "norm"]
         assert summary.set_index("таблица").loc["osv", "строк"] == 9
 
     def test_main_ok(self, data_dir, capsys, tmp_path):

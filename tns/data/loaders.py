@@ -94,6 +94,8 @@ SCHEMAS: dict[str, dict[str, str | list[str]]] = {
     "payments": {"ls": "int64", "payment_date": "datetime64[ns]", "amount": "float64", "payment_method": "Int64"},
     "events": {"ls": "int64", "measure": list(MEASURE_FILES), "event_date": "datetime64[ns]", "date_precision": DATE_PRECISIONS},
     "limits": {"measure": list(MEASURE_FILES), "limit": "Int64"},
+    # Выгрузка норматива заказчика (P-07). month = NaT — значение действует для всех месяцев.
+    "norm": {"ls": "int64", "month": "datetime64[ns]", "norm": "float64"},
 }
 TABLE_SOURCES = {
     "info": [INFO_FILE],
@@ -434,6 +436,93 @@ def read_payments(data_dir: Path) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Выгрузка норматива заказчика (P-07)
+# ---------------------------------------------------------------------------
+
+NORM_COLUMNS_DEFAULT = {"ls": "ЛС", "norm": "Норматив", "month": "Месяц"}
+
+
+def _empty_norm() -> pd.DataFrame:
+    return pd.DataFrame({
+        "ls": pd.Series(dtype="int64"), "month": pd.Series(dtype="datetime64[ns]"), "norm": pd.Series(dtype="float64"),
+    })
+
+
+def customer_norm_path(data_dir: Path, settings: dict) -> Path | None:
+    """Путь к выгрузке норматива из norm.customer_file. Относительный путь — от папки с данными."""
+    name = settings.get("norm", {}).get("customer_file")
+    if not name:
+        return None
+    path = Path(name)
+    return path if path.is_absolute() else Path(data_dir) / path
+
+
+def read_customer_norm(data_dir: Path, settings: dict) -> pd.DataFrame:
+    """Выгрузка норматива заказчика: ls, month, norm (одинарный, руб.).
+
+    Файл .xlsx или .csv (разделитель «;» или «,», десятичная запятая допускается). Названия колонок —
+    norm.customer_columns. Колонка месяца необязательна: без неё значение действует для всех месяцев.
+    Значение делится на norm.customer_multiplier (2 — если в выгрузке сразу двукратный норматив).
+    Если путь не задан (norm.customer_file: null), возвращает пустую таблицу: работает прокси.
+    """
+    path = customer_norm_path(data_dir, settings)
+    if path is None:
+        return _empty_norm()
+    options = settings["norm"]
+    columns = {**NORM_COLUMNS_DEFAULT, **(options.get("customer_columns") or {})}
+    multiplier = options.get("customer_multiplier", 1)
+    if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier <= 0:
+        raise ValueError(f"norm.customer_multiplier — положительное число (1 или 2), а указано «{multiplier}».")
+
+    file_name, problems = path.name, []
+    if path.suffix.lower() == ".csv":
+        raw = _read_csv(path, sep=None, engine="python", encoding="utf-8-sig", dtype=str)
+    else:
+        raw = _read_excel(path, dtype=object)
+    raw.columns = [str(c).strip() for c in raw.columns]
+    has_month = columns["month"] in raw.columns
+    _require_columns(raw.columns, [columns["ls"], columns["norm"]], file_name,
+                     " Названия колонок задаются в configs/settings.yaml, раздел norm.customer_columns.")
+    if raw.empty:
+        raise ValueError(f"В файле «{file_name}» нет ни одной строки с нормативом, только шапка.")
+
+    df = _clean_ls(raw, columns["ls"], file_name, raw.index + 2, problems, label=columns["ls"])
+    rows = df.index + 2
+    text = df[columns["norm"]].astype("string").str.replace(r"[\s\u00a0]", "", regex=True).str.replace(",", ".", regex=False)
+    value = pd.to_numeric(text, errors="coerce").astype("float64")
+    bad = value.isna() | (value <= 0)
+    _warn(problems, validator.lost_values(
+        file_name, columns["norm"], bad, df[columns["norm"]], rows, what="положительное число, руб.",
+    ))
+    if has_month:
+        month = _parse_excel_dates(df[columns["month"]]).dt.to_period("M").dt.to_timestamp()
+        no_month = month.isna() & df[columns["month"]].notna()
+        _warn(problems, validator.lost_values(
+            file_name, columns["month"], no_month, df[columns["month"]], rows, what="дата или месяц, например 01.03.2026",
+        ))
+        bad |= no_month
+    else:
+        month = pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+
+    norm = pd.DataFrame({
+        "ls": df["ls"].to_numpy(),
+        "month": month.astype("datetime64[ns]").to_numpy(),
+        "norm": (value / multiplier).to_numpy(),
+    })[~bad.to_numpy()].reset_index(drop=True)
+    repeated = norm.duplicated(["ls", "month"], keep=False)
+    if repeated.any():
+        example = norm.loc[repeated].iloc[0]
+        when = "" if pd.isna(example["month"]) else f" за {example['month']:%Y-%m}"
+        raise ValueError(
+            f"В файле «{file_name}» у {norm.loc[repeated, 'ls'].nunique()} ЛС норматив указан несколько раз "
+            f"на один месяц, например ЛС {example['ls']}{when}. Оставьте одно значение."
+        )
+    norm.attrs["problems"] = problems
+    logger.info("Норматив заказчика: %d строк, %d ЛС из «%s».", len(norm), norm["ls"].nunique(), file_name)
+    return norm
+
+
+# ---------------------------------------------------------------------------
 # Файлы 04–13 — меры
 # ---------------------------------------------------------------------------
 
@@ -672,7 +761,9 @@ def _load_cached(name: str, data_dir: Path, settings: dict, cache_dir: Path | No
 
 
 def load_all(data_dir: Path | str, settings: dict, cache_dir: Path | str | None = None) -> dict[str, pd.DataFrame]:
-    """Читает и проверяет файлы 01–14, возвращает таблицы info, osv, payments, events, limits.
+    """Читает и проверяет файлы 01–14, возвращает таблицы info, osv, payments, events, limits, norm.
+
+    norm — выгрузка норматива заказчика (norm.customer_file), пустая, если её нет.
 
     Если хоть в одном файле ошибка, бросает ValidationError со списком ошибок по всем файлам.
     Предупреждения — в table.attrs["problems"]. cache_dir — папка кэша для 01–13, None — без кэша.
@@ -686,6 +777,7 @@ def load_all(data_dir: Path | str, settings: dict, cache_dir: Path | str | None 
     problems: list[Problem] = []
     readers = {name: (lambda n=name: _load_cached(n, data_dir, settings, cache_dir)) for name in TABLE_SOURCES}
     readers["limits"] = lambda: read_limits(data_dir, settings)
+    readers["norm"] = lambda: read_customer_norm(data_dir, settings)
     for name, read in readers.items():
         logger.info("Читаю «%s».", name)
         try:
@@ -694,7 +786,9 @@ def load_all(data_dir: Path | str, settings: dict, cache_dir: Path | str | None 
             problems += error.problems
             continue
         except (OSError, ValueError) as error:
-            sources = TABLE_SOURCES.get(name, [LIMITS_FILE])
+            norm_path = customer_norm_path(data_dir, settings)
+            default = [norm_path.name if norm_path else ""] if name == "norm" else [LIMITS_FILE]
+            sources = TABLE_SOURCES.get(name, default)
             problems.append(validator.error(sources[0] if len(sources) == 1 else "", str(error)))
             continue
         problems += tables[name].attrs.get("problems", [])
@@ -722,12 +816,13 @@ def summarize(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
     rows = []
     for name, table in tables.items():
         dates = [c for c in table.columns if pd.api.types.is_datetime64_any_dtype(table[c])]
+        known = table[dates[0]].dropna() if dates else pd.Series(dtype="datetime64[ns]")
         rows.append({
             "таблица": name,
             "строк": len(table),
             "ЛС": table["ls"].nunique() if "ls" in table.columns else None,
-            "с": f"{table[dates[0]].min():%Y-%m-%d}" if dates and len(table) else "",
-            "по": f"{table[dates[0]].max():%Y-%m-%d}" if dates and len(table) else "",
+            "с": f"{known.min():%Y-%m-%d}" if len(known) else "",
+            "по": f"{known.max():%Y-%m-%d}" if len(known) else "",
             "предупреждений": len(table.attrs.get("problems", [])),
         })
     return pd.DataFrame(rows)
