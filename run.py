@@ -7,7 +7,17 @@
 """
 import sys
 
-from tns.pipeline import main
+try:
+    from tns.pipeline import main
+except ModuleNotFoundError as error:
+    # Библиотеки ещё не загружены, поэтому журнала нет: пишем прямо на экран.
+    print(
+        f"ОШИБКА Не установлена библиотека «{error.name}».\n"
+        "Что сделать: установите зависимости командой python -m pip install -r requirements.txt "
+        "и запустите снова.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 if __name__ == "__main__":
     sys.exit(main())

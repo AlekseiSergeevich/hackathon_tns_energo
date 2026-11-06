@@ -54,7 +54,7 @@ class TestCommandLine:
 
     def test_bad_month_format(self, data_dir, tmp_path, config, caplog):
         assert run(data_dir, tmp_path / "out", config, "02.2025") == 1
-        assert "нужен формат ГГГГ-ММ" in caplog.text
+        assert "укажите месяц в формате ГГГГ-ММ" in caplog.text
         assert not (tmp_path / "out").exists()
 
     def test_month_outside_data(self, data_dir, tmp_path, config, caplog):
@@ -64,7 +64,7 @@ class TestCommandLine:
 
     def test_month_is_required(self, data_dir, config, caplog):
         assert pipeline.main(["--data", str(data_dir), "--config", str(config)]) == 1
-        assert "не указан месяц плана" in caplog.text
+        assert "Не указан месяц плана. Добавьте --month" in caplog.text
 
     def test_missing_data_folder(self, tmp_path, config, caplog):
         assert run(tmp_path / "нет", tmp_path / "out", config) == 1
@@ -163,9 +163,13 @@ class TestSteps:
         with pytest.raises(pipeline.StepError, match="catboost"):
             pipeline.run_pipeline(ctx)
 
-    def test_internal_error_shows_traceback(self, data_dir, tmp_path, config, monkeypatch, caplog):
+    def test_internal_error_points_to_log(self, data_dir, tmp_path, config, monkeypatch, caplog):
         def stages(c):
             return 1 / 0
         fake_module(monkeypatch, "tns.rules.stages", build_stages=stages)
         assert run(data_dir, tmp_path / "out", config) == 1
-        assert "Внутренняя ошибка программы" in caplog.text and "ZeroDivisionError" in caplog.text
+        assert "Шаг 5 «стадии»: внутренняя ошибка программы (ZeroDivisionError: division by zero)" in caplog.text
+        assert "Что сделать: Это не ошибка в ваших данных. Пришлите файл журнала разработчикам." in caplog.text
+        # Трассировка — в журнале (уровень DEBUG), не на экране.
+        traceback = [r for r in caplog.records if r.exc_info]
+        assert traceback and all(r.levelno == logging.DEBUG for r in traceback)

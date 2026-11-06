@@ -27,6 +27,7 @@ import openpyxl
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+from tns.logs import report_error, setup_logging
 from tns.data.loaders import OSV_FILE, PAYMENTS_FILE, REPO_ROOT, load_settings
 from tns.data.panel import parse_plan_month
 
@@ -68,7 +69,8 @@ def read_osv_cells(path: Path) -> tuple[pd.DataFrame, list[str]]:
 
     starts = [i for i, value in enumerate(top) if isinstance(value, datetime)]
     if not starts:
-        raise ValueError(f"В файле «{path.name}» в первой строке шапки нет месяцев.")
+        raise ValueError(f"В файле «{path.name}» в первой строке шапки нет месяцев. "
+                         "Верните шапку как в исходной выгрузке: даты месяцев над блоками колонок.")
     first = pd.Timestamp(top[starts[0]]).to_period("M").to_timestamp()
     blocks, notes = [], []
     for k, start in enumerate(starts):
@@ -83,7 +85,8 @@ def read_osv_cells(path: Path) -> tuple[pd.DataFrame, list[str]]:
             labels = (labels,) if isinstance(labels, str) else labels
             found = [i for i in range(start, end) if str(sub[i] or "").strip().lower() in labels]
             if len(found) != 1:
-                raise ValueError(f"В файле «{path.name}» у блока {month:%Y-%m} не найдена колонка «{labels[0]}».")
+                raise ValueError(f"В файле «{path.name}» у блока {month:%Y-%m} не найдена колонка «{labels[0]}». "
+                                 "Верните шапку как в исходной выгрузке.")
             columns[metric] = found[0]
         blocks.append((month, columns))
 
@@ -351,7 +354,7 @@ def run_check(panel: pd.DataFrame, data_dir: Path, ls: list[int] | None = None
     if ls:
         unknown = sorted(set(ls) - set(table["ls"]))
         if unknown:
-            raise ValueError(f"В ОСВ нет ЛС: {', '.join(map(str, unknown))}.")
+            raise ValueError(f"В ОСВ нет ЛС: {', '.join(map(str, unknown))}. Проверьте номера в --ls.")
         cases = {f"ЛС {x}": x for x in ls}
     else:
         cases = pick_cases(table)
@@ -369,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--month", required=True, help="месяц плана ГГГГ-ММ: папка, где лежит panel.parquet")
     parser.add_argument("--ls", nargs="+", type=int, help="номера ЛС для ручной проверки (по умолчанию 20 ЛС)")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log_path = setup_logging("panel_check", argv=argv)
 
     try:
         settings = load_settings(args.config)
@@ -380,8 +383,8 @@ def main(argv: list[str] | None = None) -> int:
         data_dir = Path(args.data or REPO_ROOT / settings["paths"]["data_dir"])
         _, summary_table, manual, bad = run_check(pd.read_parquet(panel_path), data_dir, args.ls)
         write_check(folder / "panel_check.xlsx", summary_table, manual, bad)
-    except (OSError, ValueError, KeyError) as error:
-        logger.error("Сверка не построена: %s", error)
+    except Exception as error:  # noqa: BLE001 — любую ошибку объясняем пользователю
+        report_error(error, log_path, "Сверка не построена: ")
         return 1
 
     for _, row in summary_table.iterrows():

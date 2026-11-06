@@ -208,3 +208,4 @@ __marimo__/
 
 # Кэш загрузчиков tns/data/loaders.py
 output/cache/
+output/logs/

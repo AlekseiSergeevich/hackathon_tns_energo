@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from tns.logs import report_error, setup_logging
 from tns.data import validator
 from tns.data.validator import ERROR, Problem, ValidationError
 
@@ -109,7 +110,8 @@ def load_settings(path: Path | str | None = None) -> dict:
     """Читает configs/settings.yaml."""
     path = Path(path) if path else DEFAULT_SETTINGS
     if not path.exists():
-        raise FileNotFoundError(f"Не найден файл настроек: {path}")
+        raise FileNotFoundError(f"Не найден файл настроек «{path}». Укажите файл в --config "
+                                "или верните configs/settings.yaml из репозитория.")
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
@@ -120,7 +122,10 @@ def load_settings(path: Path | str | None = None) -> dict:
 
 def _require_file(path: Path) -> Path:
     if not path.exists():
-        raise FileNotFoundError(f"Не найден входной файл «{path.name}» в папке «{path.parent}».")
+        raise FileNotFoundError(
+            f"Не найден входной файл «{path.name}» в папке «{path.parent}». "
+            "Положите файл в эту папку с этим именем или укажите другую папку в --data."
+        )
     return path
 
 
@@ -150,6 +155,7 @@ def _require_columns(columns, required: list[str], file_name: str, hint: str = "
     names = ", ".join(f"«{c}»" for c in missing)
     found = ", ".join(f"«{c}»" for c in present[:10] if c and c.lower() != "nan") or "ничего"
     what = f"нет колонки {names}" if len(missing) == 1 else f"нет колонок {names}"
+    hint = hint or " Исправьте шапку: названия колонок должны быть такими же, как в исходной выгрузке."
     raise ValueError(f"В файле «{file_name}» {what}. В шапке найдено: {found}.{hint}")
 
 
@@ -208,7 +214,8 @@ def read_info(data_dir: Path) -> pd.DataFrame:
     columns = [*INFO_FLAGS.values(), *HOUSE_TYPES, INFO_GUID_COLUMN]
     _require_columns(raw.columns, ["ЛС", *columns], INFO_FILE)
     if raw.empty:
-        raise ValueError(f"В файле «{INFO_FILE}» нет ни одной строки с данными, только шапка.")
+        raise ValueError(f"В файле «{INFO_FILE}» нет ни одной строки с данными, только шапка."
+                         " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром.")
 
     df = _clean_ls(raw, "ЛС", INFO_FILE, raw.index + 2, problems)[["ls", *columns]]
     duplicated = df.duplicated("ls")
@@ -259,12 +266,13 @@ def _parse_osv_blocks(header: pd.DataFrame) -> tuple[int, list[tuple[pd.Timestam
     if len(header) < 2:
         raise ValueError(
             f"В файле «{OSV_FILE}» нет двухстрочной шапки: в первой строке «ЛС» и месяцы, "
-            "во второй — «СЗ на начало», «Начислено», «Оплачено»."
+            "во второй — «СЗ на начало», «Начислено», «Оплачено». Верните шапку как в исходной выгрузке."
         )
     top, sub = header.iloc[0].tolist(), header.iloc[1].tolist()
     ls_columns = [i for i, value in enumerate(top) if str(value).strip() == "ЛС"]
     if not ls_columns:
-        raise ValueError(f"В файле «{OSV_FILE}» нет колонки «ЛС» в первой строке шапки.")
+        raise ValueError(f"В файле «{OSV_FILE}» нет колонки «ЛС» в первой строке шапки. "
+                         "Первая колонка должна называться «ЛС», как в исходной выгрузке.")
 
     blocks: list[tuple[pd.Timestamp, dict]] = []
     for i, value in enumerate(top):
@@ -274,7 +282,8 @@ def _parse_osv_blocks(header: pd.DataFrame) -> tuple[int, list[tuple[pd.Timestam
             month = pd.to_datetime(value, errors="coerce")
             if pd.isna(month):
                 raise ValueError(
-                    f"В файле «{OSV_FILE}», колонка {i + 1}: «{value}» в первой строке шапки не похоже на месяц."
+                    f"В файле «{OSV_FILE}», колонка {i + 1}: «{value}» в первой строке шапки не похоже на месяц. "
+                    "Над каждым блоком из трёх колонок должна стоять дата месяца, например 01.03.2026."
                 )
             blocks.append((month.to_period("M").to_timestamp(), {}))
         metric = OSV_METRICS.get(str(sub[i]).strip().lower())
@@ -282,13 +291,15 @@ def _parse_osv_blocks(header: pd.DataFrame) -> tuple[int, list[tuple[pd.Timestam
             blocks[-1][1].setdefault(metric, i)
 
     if not blocks:
-        raise ValueError(f"В файле «{OSV_FILE}» в шапке не найдено ни одного месяца.")
+        raise ValueError(f"В файле «{OSV_FILE}» в шапке не найдено ни одного месяца. "
+                         "В первой строке над блоками колонок должны стоять даты месяцев, например 01.03.2026.")
     for month, metrics in blocks:
         missing = [OSV_METRIC_NAMES[m] for m in OSV_METRIC_NAMES if m not in metrics]
         if missing:
             raise ValueError(
                 f"В файле «{OSV_FILE}» для месяца {month:%Y-%m} нет "
-                f"{'колонки' if len(missing) == 1 else 'колонок'} {', '.join(f'«{m}»' for m in missing)}."
+                f"{'колонки' if len(missing) == 1 else 'колонок'} {', '.join(f'«{m}»' for m in missing)}. "
+                "Под каждым месяцем должны быть три колонки: «СЗ на начало», «Начислено», «Оплачено»."
             )
 
     seen: set[pd.Timestamp] = set()
@@ -306,13 +317,14 @@ def read_osv(data_dir: Path, settings: dict) -> pd.DataFrame:
     path = data_dir / OSV_FILE
     policy = settings["osv"]["duplicate_month"]
     if policy not in {"shift_next", "drop", "error"}:
-        raise ValueError(f"Неизвестное значение osv.duplicate_month: «{policy}». Допустимо: shift_next, drop, error.")
+        raise ValueError(f"Неизвестное значение osv.duplicate_month: «{policy}». Допустимо: shift_next, drop, error. Исправьте это в configs/settings.yaml.")
     header = _read_excel(path, header=None, nrows=2)
     ls_column, blocks, repeated = _parse_osv_blocks(header)
 
     body = _read_excel(path, header=None, skiprows=2)
     if body.empty:
-        raise ValueError(f"В файле «{OSV_FILE}» нет ни одной строки с данными, только шапка.")
+        raise ValueError(f"В файле «{OSV_FILE}» нет ни одной строки с данными, только шапка."
+                         " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром.")
     body = _clean_ls(body, ls_column, OSV_FILE, body.index + 3, problems)
     duplicated = body.duplicated("ls")
     if duplicated.any():
@@ -378,7 +390,8 @@ def read_osv(data_dir: Path, settings: dict) -> pd.DataFrame:
     months = pd.date_range(osv["month"].min(), osv["month"].max(), freq="MS")
     if len(months) != osv["month"].nunique():
         absent = [f"{m:%Y-%m}" for m in months if m not in set(osv["month"])]
-        raise ValueError(f"В файле «{OSV_FILE}» в шапке пропущены месяцы: {', '.join(absent)}.")
+        raise ValueError(f"В файле «{OSV_FILE}» в шапке пропущены месяцы: {', '.join(absent)}. "
+                         "Выгрузите ОСВ заново за весь период без пропусков.")
     osv = osv.sort_values(["ls", "month"], ignore_index=True)
     osv.attrs["problems"] = problems
     return osv
@@ -402,7 +415,8 @@ def read_payments(data_dir: Path) -> pd.DataFrame:
         hint = " Похоже, колонки разделены не точкой с запятой: в файле должен быть разделитель «;»."
     _require_columns(raw.columns, ["Номер", "Дата оплаты", "Сумма", "Способ оплаты"], PAYMENTS_FILE, hint)
     if raw.empty:
-        raise ValueError(f"В файле «{PAYMENTS_FILE}» нет ни одной строки с оплатами, только шапка.")
+        raise ValueError(f"В файле «{PAYMENTS_FILE}» нет ни одной строки с оплатами, только шапка."
+                         " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром.")
 
     df = _clean_ls(raw, "Номер", PAYMENTS_FILE, raw.index + 2, problems, label="Номер")
     rows = df.index + 2
@@ -472,7 +486,7 @@ def read_customer_norm(data_dir: Path, settings: dict) -> pd.DataFrame:
     columns = {**NORM_COLUMNS_DEFAULT, **(options.get("customer_columns") or {})}
     multiplier = options.get("customer_multiplier", 1)
     if isinstance(multiplier, bool) or not isinstance(multiplier, (int, float)) or multiplier <= 0:
-        raise ValueError(f"norm.customer_multiplier — положительное число (1 или 2), а указано «{multiplier}».")
+        raise ValueError(f"norm.customer_multiplier — положительное число (1 или 2), а указано «{multiplier}». Исправьте это в configs/settings.yaml.")
 
     file_name, problems = path.name, []
     if path.suffix.lower() == ".csv":
@@ -484,7 +498,8 @@ def read_customer_norm(data_dir: Path, settings: dict) -> pd.DataFrame:
     _require_columns(raw.columns, [columns["ls"], columns["norm"]], file_name,
                      " Названия колонок задаются в configs/settings.yaml, раздел norm.customer_columns.")
     if raw.empty:
-        raise ValueError(f"В файле «{file_name}» нет ни одной строки с нормативом, только шапка.")
+        raise ValueError(f"В файле «{file_name}» нет ни одной строки с нормативом, только шапка."
+                         " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром.")
 
     df = _clean_ls(raw, columns["ls"], file_name, raw.index + 2, problems, label=columns["ls"])
     rows = df.index + 2
@@ -535,7 +550,8 @@ def read_measure_file(data_dir: Path, measure: str) -> tuple[pd.DataFrame, list[
     problems: list[Problem] = []
     raw = _read_excel(data_dir / file_name, header=None, dtype=object)
     if raw.empty:
-        raise ValueError(f"Файл «{file_name}» пуст: нужна шапка «ЛС | Дата» и строки с мерами.")
+        raise ValueError(f"Файл «{file_name}» пуст: нужна шапка «ЛС | Дата» и строки с мерами."
+                         " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром.")
     header_row = next(
         (i for i in range(min(5, len(raw))) if "ЛС" in {str(v).strip() for v in raw.iloc[i] if pd.notna(v)}),
         1 if len(raw) > 1 else 0,
@@ -618,12 +634,14 @@ def _limits_frame(limits: dict[str, int | None], problems: list[Problem]) -> pd.
 
 def _read_limits_yaml(path: Path) -> dict[str, int | None]:
     if not path.exists():
-        raise FileNotFoundError(f"Не найден файл запасных лимитов «{path}».")
+        raise FileNotFoundError(f"Не найден файл запасных лимитов «{path}». Положите файл 14 «{LIMITS_FILE}» "
+                                "в папку с данными или верните configs/limits.yaml из репозитория.")
     with open(path, encoding="utf-8") as fh:
         limits = (yaml.safe_load(fh) or {}).get("limits") or {}
     missing = [m for m in MEASURE_FILES if m not in limits]
     if missing:
-        raise ValueError(f"В файле «{path.name}» нет лимитов для мер: {', '.join(missing)}.")
+        raise ValueError(f"В файле «{path.name}» нет лимитов для мер: {', '.join(missing)}. "
+                         "Добавьте их в файл (для меры без ограничения — null).")
     return {m: None if limits[m] is None else int(limits[m]) for m in MEASURE_FILES}
 
 
@@ -708,7 +726,8 @@ def check_schema(name: str, df: pd.DataFrame, schemas: dict | None = None, keys:
     if keys and not problems and df.duplicated(keys).any():
         problems.append(f"повторяются ключи ({', '.join(keys)}): {int(df.duplicated(keys).sum())} строк")
     if problems:
-        raise ValueError(f"Таблица «{name}» не соответствует docs/interfaces.md: {'; '.join(problems)}.")
+        raise ValueError(f"Таблица «{name}» не соответствует docs/interfaces.md: {'; '.join(problems)}. "
+                         "Это ошибка программы, а не ваших данных: пришлите файл журнала разработчикам.")
 
 
 def _cache_key(name: str, data_dir: Path, settings: dict) -> dict:
@@ -770,7 +789,7 @@ def load_all(data_dir: Path | str, settings: dict, cache_dir: Path | str | None 
     """
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
-        raise FileNotFoundError(f"Не найдена папка с данными: «{data_dir}».")
+        raise FileNotFoundError(f"Не найдена папка с данными «{data_dir}». Укажите папку с файлами 01–14 в --data.")
     cache_dir = Path(cache_dir) if cache_dir is not None else None
 
     tables: dict[str, pd.DataFrame] = {}
@@ -834,14 +853,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data", help="папка с файлами 01–14 (по умолчанию из настроек)")
     parser.add_argument("--no-cache", action="store_true", help="читать исходные файлы, не используя кэш")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log_path = setup_logging("loaders", argv=argv)
 
     try:
         settings = load_settings(args.config)
         cache_dir = None if args.no_cache else default_cache_dir(settings)
         tables = load_all(args.data or REPO_ROOT / settings["paths"]["data_dir"], settings, cache_dir)
-    except (OSError, ValueError, KeyError) as error:
-        logger.error("Файлы не прочитаны. %s", error)
+    except Exception as error:  # noqa: BLE001 — любую ошибку объясняем пользователю
+        report_error(error, log_path, "Файлы не прочитаны: ")
         return 1
 
     with pd.option_context("display.max_colwidth", None, "display.width", 200):

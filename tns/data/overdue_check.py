@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tns.logs import report_error, setup_logging
 from tns.data.loaders import REPO_ROOT, load_settings
 from tns.data.panel import KOPECK, parse_plan_month
 
@@ -85,7 +86,8 @@ def _reopen_newest(bills: list[Bill], amount: float) -> None:
 def fifo_by_bills(saldo_start, accrual, paid, zero_accrual_months: str = "count") -> list[MonthState]:
     """Ручной расчёт срока для одного ЛС. Аргументы — значения по месяцам подряд с начала данных."""
     if zero_accrual_months not in {"count", "skip"}:
-        raise ValueError(f"Неизвестное значение overdue.zero_accrual_months: «{zero_accrual_months}».")
+        raise ValueError(f"Неизвестное значение overdue.zero_accrual_months: «{zero_accrual_months}». "
+                         "Можно: count или skip. Исправьте это в configs/settings.yaml.")
     saldo = np.asarray(saldo_start, dtype=float)
     charged = np.nan_to_num(np.asarray(accrual, dtype=float))
     payment = np.nan_to_num(np.asarray(paid, dtype=float))
@@ -246,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--month", required=True, help="месяц плана ГГГГ-ММ: папка, где лежит panel.parquet")
     parser.add_argument("--ls", nargs="+", type=int, help="номера ЛС (по умолчанию 10 ЛС с разными ситуациями)")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log_path = setup_logging("overdue_check", argv=argv)
 
     try:
         settings = load_settings(args.config)
@@ -258,14 +260,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.ls:
             missing = sorted(set(args.ls) - set(panel["ls"]))
             if missing:
-                raise ValueError(f"В панели нет ЛС: {', '.join(map(str, missing))}.")
+                raise ValueError(f"В панели нет ЛС: {', '.join(map(str, missing))}. Проверьте номера в --ls.")
             cases = {f"ЛС {x}": x for x in args.ls}
         else:
             cases = pick_cases(panel)
         table = check_table(panel, cases, settings["overdue"]["zero_accrual_months"])
         write_check(table, folder / "overdue_check.xlsx")
-    except (OSError, ValueError, KeyError) as error:
-        logger.error("Сверка не построена: %s", error)
+    except Exception as error:  # noqa: BLE001 — любую ошибку объясняем пользователю
+        report_error(error, log_path, "Сверка не построена: ")
         return 1
 
     bad = table.loc[~table["Совпало"], ["ЛС", "Месяц (на 01-е)"]]
