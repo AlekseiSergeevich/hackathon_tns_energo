@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from tns.logs import report_error, setup_logging
 from tns.data import quality
 from tns.data.loaders import (
     DATE_PRECISIONS, HOUSE_TYPES, MEASURE_FILES, REPO_ROOT, check_schema, default_cache_dir, load_all,
@@ -109,7 +110,8 @@ def _overdue_from_saldo(dz: np.ndarray, accrual: np.ndarray, zero_accrual_months
     Возвращает float-матрицы dz_overdue и overdue_m и bool-матрицу censored.
     """
     if zero_accrual_months not in {"count", "skip"}:
-        raise ValueError(f"Неизвестное значение overdue.zero_accrual_months: «{zero_accrual_months}».")
+        raise ValueError(f"Неизвестное значение overdue.zero_accrual_months: «{zero_accrual_months}». "
+                         "Можно: count или skip. Исправьте это в configs/settings.yaml.")
     # Отрицательные начисления (перерасчёты) не создают долг, который можно покрыть.
     charged = np.clip(np.nan_to_num(accrual), 0, None)
     n_ls, n_months = dz.shape
@@ -197,7 +199,7 @@ def build_panel(osv: pd.DataFrame, payments: pd.DataFrame, settings: dict,
                 customer_norm: pd.DataFrame | None = None) -> pd.DataFrame:
     """Панель «ЛС × месяц» из длинной ОСВ (read_osv), оплат (read_payments) и выгрузки норматива (если есть)."""
     if settings["overdue"]["allocation"] != "fifo":
-        raise ValueError(f"Неизвестное значение overdue.allocation: «{settings['overdue']['allocation']}». Сейчас поддерживается только fifo.")
+        raise ValueError(f"Неизвестное значение overdue.allocation: «{settings['overdue']['allocation']}». Сейчас поддерживается только fifo. Исправьте это в configs/settings.yaml.")
 
     panel = osv[["ls", "month", "saldo_start", "accrual", "paid"]].sort_values(["ls", "month"], ignore_index=True)
     panel = panel.astype({"saldo_start": "float64", "accrual": "float64", "paid": "float64"})
@@ -259,12 +261,12 @@ def check_result_settings(settings: dict) -> tuple[float, str, int | None]:
     result = settings["result"]
     share, window, days = result.get("share"), result.get("window"), result.get("days")
     if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 < share <= 1:
-        raise ValueError(f"result.share — доля долга от 0 до 1 (например, 0.30 — это 30 %), а указано «{share}».")
+        raise ValueError(f"result.share — доля долга от 0 до 1 (например, 0.30 — это 30 %), а указано «{share}». Исправьте это в configs/settings.yaml.")
     if window not in WINDOW_KINDS:
-        raise ValueError(f"Неизвестное значение result.window: «{window}». Можно: {', '.join(WINDOW_KINDS)}.")
+        raise ValueError(f"Неизвестное значение result.window: «{window}». Можно: {', '.join(WINDOW_KINDS)}. Исправьте это в configs/settings.yaml.")
     if window == "days":
         if isinstance(days, bool) or not isinstance(days, int) or days < 1:
-            raise ValueError(f"result.days — целое число дней не меньше 1 (окно result.window: days), а указано «{days}».")
+            raise ValueError(f"result.days — целое число дней не меньше 1 (окно result.window: days), а указано «{days}». Исправьте это в configs/settings.yaml.")
         return float(share), window, days
     return float(share), window, None
 
@@ -370,7 +372,7 @@ def parse_plan_month(text: str) -> pd.Timestamp:
     try:
         return pd.to_datetime(text, format="%Y-%m")
     except ValueError as error:
-        raise ValueError(f"Неверный месяц «{text}»: нужен формат ГГГГ-ММ, например 2026-03.") from error
+        raise ValueError(f"Неверный месяц «{text}»: укажите месяц в формате ГГГГ-ММ, например --month 2026-03.") from error
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -381,7 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--month", help="месяц плана ГГГГ-ММ (по умолчанию последний месяц панели)")
     parser.add_argument("--no-cache", action="store_true", help="читать исходные файлы, не используя кэш")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    log_path = setup_logging("panel", argv=argv)
 
     try:
         settings = load_settings(args.config)
@@ -398,8 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         target = save_tables(tables, args.out or REPO_ROOT / settings["paths"]["output_dir"], plan_month)
         quality.write_report(report, target, {"Папка с данными": str(data_dir)})
-    except (OSError, ValueError, KeyError) as error:
-        logger.error("Таблицы не построены: %s", error)
+    except Exception as error:  # noqa: BLE001 — любую ошибку объясняем пользователю
+        report_error(error, log_path, "Таблицы не построены: ")
         return 1
 
     for name, table in tables.items():

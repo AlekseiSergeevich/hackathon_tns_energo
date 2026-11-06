@@ -146,7 +146,7 @@ def open_error(file: str, error: BaseException, kind: str) -> str:
     if isinstance(error, PermissionError):
         return f"Файл «{file}» не открывается: нет доступа. Если он открыт в Excel, закройте его и запустите снова."
     if isinstance(error, IsADirectoryError):
-        return f"«{file}» — это папка, а нужен файл."
+        return f"«{file}» — это папка, а нужен файл. Положите на это место сам файл."
     if kind == "csv":
         if isinstance(error, pd.errors.EmptyDataError):
             return f"Файл «{file}» пуст. Нужна шапка «Номер;Дата оплаты;Сумма;Способ оплаты» и строки оплат."
@@ -155,13 +155,15 @@ def open_error(file: str, error: BaseException, kind: str) -> str:
                 f"Файл «{file}» не читается в кодировке UTF-8. Пересохраните его как «CSV UTF-8 "
                 "(разделитель — точка с запятой)»."
             )
-        return f"Файл «{file}» не читается как CSV с разделителем «;»: {error}."
+        return (f"Файл «{file}» не читается как CSV с разделителем «;» ({error}). "
+                "Откройте его в Excel и сохраните как «CSV UTF-8 (разделитель — точка с запятой)».")
     if isinstance(error, (zipfile.BadZipFile, KeyError)) or "file format cannot be determined" in str(error):
         return (
             f"Файл «{file}» не открывается как книга Excel: похоже, он повреждён или сохранён в другом формате. "
             "Откройте его в Excel и сохраните как «Книга Excel (*.xlsx)»."
         )
-    return f"Файл «{file}» не открывается как книга Excel: {error}."
+    return (f"Файл «{file}» не открывается как книга Excel ({error}). "
+            "Откройте его в Excel и сохраните как «Книга Excel (*.xlsx)», затем запустите снова.")
 
 
 # ---------------------------------------------------------------------------

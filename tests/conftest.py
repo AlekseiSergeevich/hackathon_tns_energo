@@ -137,6 +137,14 @@ def data_dir(tmp_path) -> Path:
     return folder
 
 
+@pytest.fixture(autouse=True)
+def log_dir(tmp_path, monkeypatch) -> Path:
+    """Журналы запусков в тестах пишутся во временную папку, а не в output/logs."""
+    folder = tmp_path / "logs"
+    monkeypatch.setenv("TNS_LOG_DIR", str(folder))
+    return folder
+
+
 @pytest.fixture(scope="session")
 def real_data_dir() -> Path:
     if not (REAL_DATA_DIR / loaders.OSV_FILE).exists():

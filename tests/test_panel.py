@@ -335,7 +335,7 @@ class TestOneCommand:
 
     def test_bad_month(self, data_dir, config, tmp_path, caplog):
         assert panel.main(["--data", str(data_dir), "--out", str(tmp_path), "--month", "март", "--config", str(config)]) == 1
-        assert "нужен формат ГГГГ-ММ" in caplog.text
+        assert "укажите месяц в формате ГГГГ-ММ" in caplog.text
 
 
 # ---------------------------------------------------------------------------

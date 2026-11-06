@@ -101,7 +101,10 @@ class TestCannotOpen:
 
     def test_missing_file(self, data_dir, settings):
         (data_dir / SMS).unlink()
-        assert the_error(data_dir, settings) == f"Не найден входной файл «{SMS}» в папке «{data_dir}»."
+        assert the_error(data_dir, settings) == (
+            f"Не найден входной файл «{SMS}» в папке «{data_dir}». "
+            "Положите файл в эту папку с этим именем или укажите другую папку в --data."
+        )
 
     def test_empty_csv(self, data_dir, settings):
         (data_dir / loaders.PAYMENTS_FILE).write_text("", encoding="utf-8")
@@ -134,7 +137,10 @@ class TestStructure:
 
     def test_info_only_header(self, data_dir, settings):
         write_info(data_dir / loaders.INFO_FILE, [])
-        assert the_error(data_dir, settings) == "В файле «01 Общая информация о ЛС ХК.xlsx» нет ни одной строки с данными, только шапка."
+        assert the_error(data_dir, settings) == (
+            "В файле «01 Общая информация о ЛС ХК.xlsx» нет ни одной строки с данными, только шапка."
+            " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром."
+        )
 
     def test_payments_only_header(self, data_dir, settings):
         write_payments(data_dir / loaders.PAYMENTS_FILE, [])
@@ -150,7 +156,10 @@ class TestStructure:
 
     def test_measure_file_empty_sheet(self, data_dir, settings):
         write_xlsx(data_dir / SMS, [])
-        assert the_error(data_dir, settings) == "Файл «06 СМС ХК.xlsx» пуст: нужна шапка «ЛС | Дата» и строки с мерами."
+        assert the_error(data_dir, settings) == (
+            "Файл «06 СМС ХК.xlsx» пуст: нужна шапка «ЛС | Дата» и строки с мерами."
+            " Выгрузите файл заново: похоже, выгрузка прервалась или сделана с пустым фильтром."
+        )
 
     def test_measure_file_without_rows_is_a_warning(self, data_dir, settings):
         write_measure(data_dir / SMS, "СМС", [])

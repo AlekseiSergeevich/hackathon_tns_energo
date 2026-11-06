@@ -33,6 +33,7 @@ import pandas as pd
 from tns.data import panel as panel_module
 from tns.data import quality
 from tns.data.loaders import REPO_ROOT, default_cache_dir, load_all, load_settings
+from tns.logs import report_error, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,10 @@ class StepError(Exception):
     def __init__(self, number: int, step: Step, error: BaseException):
         super().__init__(f"Шаг {number} «{step.title}»: {error}")
         self.number, self.step = number, step
+
+    @property
+    def prefix(self) -> str:
+        return f"Шаг {self.number} «{self.step.title}»: "
 
 
 # ---------------------------------------------------------------------------
@@ -161,15 +166,17 @@ def _collect(step: Step, result: object) -> dict[str, pd.DataFrame]:
     elif isinstance(result, dict):
         tables = result
     else:
-        raise TypeError(f"шаг вернул {type(result).__name__}, а нужен DataFrame, словарь таблиц или None")
+        raise TypeError(f"шаг вернул {type(result).__name__}, а нужен DataFrame, словарь таблиц или None. "
+                        "Это ошибка в коде шага: сообщите его разработчику (docs/interfaces.md, «Таблицы-стыки»).")
     if set(tables) != set(step.produces):
         raise ValueError(
             f"шаг должен вернуть таблицы {', '.join(step.produces) or '(никаких)'}, "
-            f"а вернул {', '.join(tables) or '(никаких)'}"
+            f"а вернул {', '.join(tables) or '(никаких)'}. Это ошибка в коде шага: сообщите его разработчику."
         )
     for name, table in tables.items():
         if not isinstance(table, pd.DataFrame):
-            raise TypeError(f"таблица «{name}» — {type(table).__name__}, а нужен DataFrame")
+            raise TypeError(f"таблица «{name}» — {type(table).__name__}, а нужен DataFrame. "
+                            "Это ошибка в коде шага: сообщите его разработчику.")
     return tables
 
 
@@ -247,21 +254,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="файл настроек (по умолчанию configs/settings.yaml)")
     parser.add_argument("--no-cache", action="store_true", help="читать исходные файлы заново, не используя кэш")
     args = parser.parse_args(argv)
-
-    # В консоли Windows не все символы есть в кодировке: лучше \uXXXX, чем падение на выводе.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="backslashreplace")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    log_path = setup_logging("run", argv=argv)
 
     try:
         if not args.month:
-            raise ValueError("не указан месяц плана. Пример: python run.py --month 2026-02 --data <папка>")
+            raise ValueError("Не указан месяц плана. Добавьте --month, например: python run.py --month 2026-02 --data <папка>")
         settings = load_settings(args.config)
         month = panel_module.parse_plan_month(args.month)
         data_dir = _resolve_path(args.data, settings["paths"]["data_dir"])
         if not data_dir.is_dir():
-            raise FileNotFoundError(f"Не найдена папка с данными: «{data_dir}». Укажите её в --data.")
+            raise FileNotFoundError(
+                f"Не найдена папка с данными «{data_dir}». Укажите папку с файлами 01–14 в --data, например: "
+                'python run.py --month 2026-02 --data "Материалы к кейсу"'
+            )
         ctx = RunContext(
             month=month,
             data_dir=data_dir,
@@ -270,21 +275,22 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             cache_dir=None if args.no_cache else default_cache_dir(settings),
         )
-    except (OSError, ValueError, KeyError) as error:
-        logger.error("Запуск невозможен: %s", error)
+    except Exception as error:  # noqa: BLE001 — любую ошибку объясняем пользователю
+        report_error(error, log_path, "Запуск невозможен: ")
         return 1
 
     logger.info("План на %s. Данные: «%s».", f"{month:%Y-%m}", data_dir)
     try:
         results = run_pipeline(ctx)
     except StepError as error:
-        if isinstance(error.__cause__, (OSError, ValueError, KeyError)):
-            logger.error("%s", error)
-        else:
-            logger.error("%s\nВнутренняя ошибка программы. Пришлите этот вывод разработчикам.", error,
-                         exc_info=error.__cause__)
+        report_error(error.__cause__, log_path, error.prefix)
+        return 1
+    except KeyboardInterrupt as error:
+        report_error(error, log_path)
         return 1
     _report(results, ctx)
+    if log_path is not None:
+        logger.info("Журнал запуска: «%s».", log_path)
     return 0
 
 
