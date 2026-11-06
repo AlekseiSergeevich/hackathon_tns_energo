@@ -43,8 +43,10 @@ class TestCommandLine:
         assert sorted(p.name for p in month_dir.iterdir()) == [
             "ls_info.parquet", "measure_events.parquet", "panel.parquet",
             "quality.parquet", "quality_examples.parquet", "quality_report.xlsx",
+            "stages.parquet", "stages.xlsx",
         ]
-        assert "Шаг 5/9: стадии — пока не реализован" in caplog.text
+        assert "Шаг 5/9: стадии — готово" in caplog.text
+        assert "Шаг 6/9: кандидаты на меры — пока не реализован" in caplog.text
         assert "План на 2025-02 не построен" in caplog.text
 
     def test_written_tables_follow_contract(self, data_dir, tmp_path, config):
